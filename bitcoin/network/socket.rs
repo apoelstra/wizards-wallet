@@ -1,0 +1,192 @@
+// Rust Bitcoin Library
+// Written in 2014 by
+//   Andrew Poelstra <apoelstra@wpsoftware.net>
+//
+// To the extent possible under law, the author(s) have dedicated all
+// copyright and related and neighboring rights to this software to
+// the public domain worldwide. This software is distributed without
+// any warranty.
+//
+// You should have received a copy of the CC0 Public Domain Dedication
+// along with this software.
+// If not, see <http://creativecommons.org/publicdomain/zero/1.0/>.
+//
+
+use time::now;
+use std::rand::task_rng;
+use rand::Rng;
+use std::io::{IoError, IoResult, NotConnected, OtherIoError, standard_error};
+use std::io::net::{ip, tcp};
+
+use network::constants;
+use network::address::Address;
+use network::serialize::CheckedData;
+use network::serialize::CommandString;
+use network::serialize::Message;
+use network::serialize::Serializable;
+use network::message_network::VersionMessage;
+
+pub struct MessageData {
+  pub data: Vec<u8>,
+  pub command: CommandString
+}
+
+/// Format an IP address in the 16-byte bitcoin protocol serialization
+fn ipaddr_to_bitcoin_addr(ipaddr: &ip::IpAddr) -> [u8, ..16] {
+  match *ipaddr {
+    ip::Ipv4Addr(a, b, c, d) =>
+        [0, 0, 0, 0, 0, 0, 0, 0,
+         0, 0, 0xff, 0xff, a, b, c, d],
+    ip::Ipv6Addr(a, b, c, d, e, f, g, h) =>
+        [(a / 0x100) as u8, (a % 0x100) as u8, (b / 0x100) as u8, (b % 0x100) as u8,
+         (c / 0x100) as u8, (c % 0x100) as u8, (d / 0x100) as u8, (d % 0x100) as u8,
+         (e / 0x100) as u8, (e % 0x100) as u8, (f / 0x100) as u8, (f % 0x100) as u8,
+         (g / 0x100) as u8, (g % 0x100) as u8, (h / 0x100) as u8, (h % 0x100) as u8 ]
+  } 
+}
+
+/// A message which can be sent on the Bitcoin network
+pub struct Socket {
+  stream: Option<tcp::TcpStream>,
+  pub services: u64,
+  pub user_agent: String,
+  pub version_nonce: u64,
+  pub magic: u32
+}
+
+impl Socket {
+  // TODO: we fix services to 0
+  pub fn new(magic: u32) -> Socket {
+    let mut rng = task_rng();
+    Socket {
+      stream: None,
+      services: 0,
+      version_nonce: rng.gen(),
+      user_agent: String::from_str(constants::USER_AGENT),
+      magic: magic
+   }
+  }
+
+  pub fn connect(&mut self, host: &str, port: u16) -> IoResult<()> {
+    match tcp::TcpStream::connect(host, port) {
+      Ok(s)  => {
+        self.stream = Some(s);
+        Ok(()) 
+      }
+      Err(e) => Err(e)
+    }
+  }
+
+  /// Peer address
+  pub fn receiver_address(&mut self) -> IoResult<Address> {
+    match self.stream {
+      Some(ref mut s) => match s.peer_name() {
+        Ok(addr) => {
+          Ok(Address {
+            services: self.services,
+            address: ipaddr_to_bitcoin_addr(&addr.ip),
+            port: addr.port
+          })
+        }
+        Err(e) => Err(e)
+      },
+      None => Err(standard_error(NotConnected))
+    }
+  }
+
+  /// Our own address
+  pub fn sender_address(&mut self) -> IoResult<Address> {
+    match self.stream {
+      Some(ref mut s) => match s.socket_name() {
+        Ok(addr) => {
+          Ok(Address {
+            services: self.services,
+            address: ipaddr_to_bitcoin_addr(&addr.ip),
+            port: addr.port
+          })
+        }
+        Err(e) => Err(e)
+      },
+      None => Err(standard_error(NotConnected))
+    }
+  }
+
+  /// Produce a version message appropriate for this socket
+  pub fn version_message(&mut self, start_height: i32) -> IoResult<VersionMessage> {
+    let timestamp = now().to_timespec().sec;
+    let recv_addr = self.receiver_address();
+    let send_addr = self.sender_address();
+    // If we are not connected, we might not be able to get these address.s
+    match recv_addr {
+      Err(e) => { return Err(e); }
+      _ => {}
+    }
+    match send_addr {
+      Err(e) => { return Err(e); }
+      _ => {}
+    }
+
+    Ok(VersionMessage {
+      version: constants::PROTOCOL_VERSION,
+      services: constants::SERVICES,
+      timestamp: timestamp,
+      receiver: recv_addr.unwrap(),
+      sender: send_addr.unwrap(),
+      nonce: self.version_nonce,
+      user_agent: self.user_agent.clone(),
+      start_height: start_height,
+      relay: false
+    })
+  }
+
+  /// Send a general message across the line
+  pub fn send_message(&mut self, message: &Message) -> IoResult<()> {
+    if self.stream.is_none() {
+      Err(standard_error(NotConnected))
+    }
+    else {
+      let payload = CheckedData::from_vec(message.serialize());
+
+      let mut wire_message = self.magic.serialize();
+      wire_message.extend(message.command().serialize().move_iter());
+      wire_message.extend(payload.serialize().move_iter());
+
+      let stream = self.stream.get_mut_ref();
+      match stream.write(wire_message.as_slice()) {
+        Ok(_) => Ok(()),
+        Err(e) => Err(e)
+      }
+    }
+  }
+
+  pub fn receive_message(&mut self) -> IoResult<MessageData> {
+    match self.stream {
+      None => Err(standard_error(NotConnected)),
+      Some(ref mut s) => {
+        let mut recv_buf = [0u8, ..0x10000];  // 64K recv buffer copied from bitcoind
+        match s.read(recv_buf.as_mut_slice()) {
+          Ok(_) => {
+            let mut iter = recv_buf.iter().map(|n| *n);
+            let magic: u32 = try!(Serializable::deserialize(iter.by_ref()));
+            let command: CommandString = try!(Serializable::deserialize(iter.by_ref()));
+            let payload: CheckedData = try!(Serializable::deserialize(iter.by_ref()));
+
+            // Check magic
+            if magic != self.magic {
+              return Err(IoError {
+                kind: OtherIoError,
+                desc: "bad magic",
+                detail: Some(format!("magic {:x} did not match network magic {:}", magic, self.magic)),
+              });
+            }
+
+            Ok(MessageData { command: command, data: payload.data() })
+          }
+          Err(e) => Err(e)
+        }
+      }
+    }
+  }
+}
+
+
