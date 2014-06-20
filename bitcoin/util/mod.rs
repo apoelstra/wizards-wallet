@@ -12,7 +12,13 @@
 // If not, see <http://creativecommons.org/publicdomain/zero/1.0/>.
 //
 
+//! # Utility functions
+//!
+//! Functions needed by all parts of the Bitcoin library
+
 pub mod hash;
 pub mod iter;
 pub mod misc;
+pub mod patricia_tree;
+pub mod uint256;
 

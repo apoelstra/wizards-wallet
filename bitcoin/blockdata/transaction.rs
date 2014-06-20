@@ -1,16 +1,27 @@
-/// Rust Bitcoin Library
-/// Written in 2014 by
-///   Andrew Poelstra <apoelstra@wpsoftware.net>
-///
-/// To the extent possible under law, the author(s) have dedicated all
-/// copyright and related and neighboring rights to this software to
-/// the public domain worldwide. This software is distributed without
-/// any warranty.
-///
-/// You should have received a copy of the CC0 Public Domain Dedication
-/// along with this software.
-/// If not, see <http://creativecommons.org/publicdomain/zero/1.0/>.
-///
+// Rust Bitcoin Library
+// Written in 2014 by
+//   Andrew Poelstra <apoelstra@wpsoftware.net>
+//
+// To the extent possible under law, the author(s) have dedicated all
+// copyright and related and neighboring rights to this software to
+// the public domain worldwide. This software is distributed without
+// any warranty.
+//
+// You should have received a copy of the CC0 Public Domain Dedication
+// along with this software.
+// If not, see <http://creativecommons.org/publicdomain/zero/1.0/>.
+//
+
+//! # Bitcoin Transaction
+//!
+//! A transaction describes a transfer of money. It consumes previously-unspent
+//! transaction outputs and produces new ones, satisfying the condition to spend
+//! the old outputs (typically a digital signature with a specific key must be
+//! provided) and defining the condition to spend the new ones. The use of digital
+//! signatures ensures that coins cannot be spent by unauthorized parties.
+//!
+//! This module provides the structures and functions needed to support transactions.
+//!
 
 use std::io::IoResult;
 use util::hash::Sha256dHash;
@@ -19,82 +30,46 @@ use blockdata::script::Script;
 #[cfg(test)]
 use util::misc::hex_bytes;
 
+/// A transaction input, which defines old coins to be consumed
 pub struct TxIn {
+  /// The hash of the transaction whose output is being used an an input
   pub prev_hash: Sha256dHash,
+  /// The index of the output in the previous transaction, which may have several
   pub prev_index: u32,
+  /// The script which pushes values on the stack which will cause
+  /// the referenced output's script to accept
   pub script_sig: Script,
+  /// The sequence number, which suggests to miners which of two
+  /// conflicting transactions should be preferred, or 0xFFFFFFFF
+  /// to ignore this feature. This is generally never used since
+  /// the miner behaviour cannot be enforced.
   pub sequence: u32,
 }
 
+/// A transaction output, which defines new coins to be created from old ones.
 pub struct TxOut {
+  /// The value of the output, in satoshis
   pub value: u64,
+  /// The script which must satisfy for the output to be spent
   pub script_pubkey: Script
 }
 
+/// A Bitcoin transaction, which describes an authenticated movement of coins
 pub struct Transaction {
+  /// The protocol version, should always be 1.
   pub version: u32,
+  /// Block number before which this transaction is valid, or 0 for
+  /// valid immediately.
   pub lock_time: u32,
+  /// List of inputs
   pub input: Vec<TxIn>,
+  /// List of outputs
   pub output: Vec<TxOut>
 }
 
-impl Serializable for TxIn {
-  fn serialize(&self) -> Vec<u8> {
-    let mut ret = self.prev_hash.serialize();
-    ret.extend(self.prev_index.serialize().move_iter());
-    ret.extend(self.script_sig.serialize().move_iter());
-    ret.extend(self.sequence.serialize().move_iter());
-    ret
-  }
-
-  fn deserialize<I: Iterator<u8>>(mut iter: I) -> IoResult<TxIn> {
-    Ok(TxIn {
-      prev_hash: try!(Serializable::deserialize(iter.by_ref())),
-      prev_index: try!(Serializable::deserialize(iter.by_ref())),
-      script_sig: try!(Serializable::deserialize(iter.by_ref())),
-      sequence: try!(Serializable::deserialize(iter.by_ref()))
-    })
-  }
-}
-
-impl Serializable for TxOut {
-  fn serialize(&self) -> Vec<u8> {
-    let mut ret = self.value.serialize();
-    ret.extend(self.script_pubkey.serialize().move_iter());
-    ret
-  }
-
-  fn deserialize<I: Iterator<u8>>(mut iter: I) -> IoResult<TxOut> {
-    Ok(TxOut {
-      value: try!(Serializable::deserialize(iter.by_ref())),
-      script_pubkey: try!(Serializable::deserialize(iter.by_ref()))
-    })
-  }
-}
-
-impl Serializable for Transaction {
-  fn serialize(&self) -> Vec<u8> {
-    let mut ret = self.version.serialize();
-    ret.extend(self.input.serialize().move_iter());
-    ret.extend(self.output.serialize().move_iter());
-    ret.extend(self.lock_time.serialize().move_iter());
-    ret
-  }
-
-  fn deserialize<I: Iterator<u8>>(mut iter: I) -> IoResult<Transaction> {
-    Ok(Transaction {
-      version: try!(Serializable::deserialize(iter.by_ref())),
-      input: try!(Serializable::deserialize(iter.by_ref())),
-      output: try!(Serializable::deserialize(iter.by_ref())),
-      lock_time: try!(Serializable::deserialize(iter.by_ref()))
-    })
-  }
-}
-
-impl Transaction {
-  pub fn hash(&self) -> Sha256dHash { Sha256dHash::from_data(self.serialize().as_slice()) }
-}
-
+impl_serializable!(TxIn, prev_hash, prev_index, script_sig, sequence)
+impl_serializable!(TxOut, value, script_pubkey)
+impl_serializable!(Transaction, version, input, output, lock_time)
 
 #[test]
 fn test_txin() {
@@ -113,13 +88,16 @@ fn test_transaction() {
   assert_eq!(realtx.version, 1);
   assert_eq!(realtx.input.len(), 1);
   // In particular this one is easy to get backward -- in bitcoin hashes are encoded
-  // as little-endian 256-bit numbers rather than as data strings.
-  assert_eq!(realtx.input.get(0).prev_hash.data().as_slice(), hex_bytes("ce9ea9f6f5e422c6a9dbcddb3b9a14d1c78fab9ab520cb281aa2a74a09575da1").unwrap().as_slice());
+  // as little-endian 256-bit numbers rather than as data strings. (This is why we
+  // have this crazy .iter().rev() thing going on in many hash-related tests.
+  assert_eq!(realtx.input.get(0).prev_hash.as_slice().iter().rev().map(|n| *n).collect::<Vec<u8>>(),
+             hex_bytes("ce9ea9f6f5e422c6a9dbcddb3b9a14d1c78fab9ab520cb281aa2a74a09575da1").unwrap());
   assert_eq!(realtx.input.get(0).prev_index, 1);
   assert_eq!(realtx.output.len(), 1);
   assert_eq!(realtx.lock_time, 0);
 
-  assert_eq!(realtx.hash().serialize().as_slice(), hex_bytes("a6eab3c14ab5272a58a5ba91505ba1a4b6d7a3a9fcbd187b6cd99a7b6d548cb7").unwrap().as_slice());
+  assert_eq!(realtx.hash().serialize().iter().rev().map(|n| *n).collect::<Vec<u8>>(),
+             hex_bytes("a6eab3c14ab5272a58a5ba91505ba1a4b6d7a3a9fcbd187b6cd99a7b6d548cb7").unwrap());
 }
 
 

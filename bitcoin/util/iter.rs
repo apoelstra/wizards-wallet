@@ -12,6 +12,11 @@
 // If not, see <http://creativecommons.org/publicdomain/zero/1.0/>.
 //
 
+//! # Iterator adaptors
+//!
+//! Iterator adaptors needed by Bitcoin but not provided by the Rust
+//! standard library.
+
 /// An Iterator which will give n elements of the contained iterator
 /// before returning None. If the contained iterator returns None too
 /// early,
@@ -39,16 +44,22 @@ impl<T, I: Iterator<T>> Iterator<T> for FixedTake<I> {
 }
 
 impl<I> FixedTake<I> {
+  /// Constructs a FixedTake iterator from an underlying iterator
   pub fn new(iter: I, n_elems: uint) -> FixedTake<I> {
     FixedTake { iter: iter, n_elems: n_elems, is_err: false }
   }
 
+  /// Indicates whether the underlying iterator has ended early
   pub fn is_err(&self) -> bool {
     self.is_err
   }
 }
 
+/// An iterator that returns at most `n_elems` elements, entering an error
+/// state if the underlying iterator yields fewer than `n_elems` elements.
 pub trait FixedTakeable<I> {
+  /// Returns an iterator similar to Take but which detects if the original 
+  /// iterator runs out early
   fn fixed_take(self, n_elems: uint) -> FixedTake<I>;
 }
 
@@ -99,7 +110,9 @@ impl<A, I: Iterator<A>> Pair<A, I> {
   }
 }
 
+/// Returns an iterator that returns elements of the original iterator 2 at a time
 pub trait Pairable<A> {
+  /// Returns an iterator that returns elements of the original iterator 2 at a time
   fn pair(self) -> Pair<A, Self>;
 }
 

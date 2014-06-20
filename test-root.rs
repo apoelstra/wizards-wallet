@@ -26,7 +26,7 @@
 
 #![crate_id = "wizards-wallet#0.1-pre"]
 
-#![comment = "The Wizards' Wallet"]
+#![comment = "The Wizards' Wallet Test Root"]
 #![license = "CC0"]
 
 // Experimental features we need
@@ -45,34 +45,5 @@ extern crate time;
 
 extern crate bitcoin;
 
-use std::io::timer;
-
-use bitcoind::Bitcoind;
-
 mod bitcoind;
-
-/// Entry point
-fn main()
-{
-  println!("Starting the Wizards' Wallet");
-
-  // Connect to bitcoind
-  let mut bitcoind = Bitcoind::new("127.0.0.1", 8333);
-  // Loop until we get a successful connection
-  loop {
-    match bitcoind.listen() {
-      Err(e) => {
-        println!("Got error {:}, trying to connect again...", e);
-      }
-      _ => { break; }
-    }
-  }
-  // Loop forever
-  loop {
-    timer::sleep(1000);
-  }
-}
-
-
-
 

@@ -12,25 +12,47 @@
 // If not, see <http://creativecommons.org/publicdomain/zero/1.0/>.
 //
 
+//! # Rust Bitcoin Library
+//!
+//! This is a library for which supports the Bitcoin network protocol and associated
+//! primitives. It is designed for Rust programs built to work with the Bitcoin
+//! network.
+//!
+//! It is also written entirely in Rust to illustrate the benefits of strong type
+//! safety, including ownership and lifetime, for financial and/or cryptographic
+//! software.
+//!
+
 #![crate_id = "bitcoin#0.1-pre"]
 #![crate_type = "dylib"]
 #![crate_type = "rlib"]
 
+// Experimental features we need
+#![feature(globs)]
 #![feature(macro_rules)]
-#![feature(log_syntax)]
-#![feature(trace_macros)]
 
 #![comment = "Rust Bitcoin Library"]
 #![license = "CC0"]
 
+// Coding conventions
+#![deny(non_uppercase_pattern_statics)]
+#![deny(uppercase_variables)]
 #![deny(non_camel_case_types)]
+#![deny(non_snake_case_functions)]
+#![deny(unused_mut)]
+#![warn(missing_doc)]
 
-extern crate time;
+extern crate alloc;
+extern crate collections;
+extern crate core;
+extern crate num;
 extern crate rand;
 extern crate serialize;
+extern crate time;
 
 extern crate crypto = "rust-crypto";
 
+mod macros;
 pub mod network;
 pub mod blockdata;
 pub mod util;

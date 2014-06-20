@@ -12,67 +12,70 @@
 // If not, see <http://creativecommons.org/publicdomain/zero/1.0/>.
 //
 
+//! # Network Serialization
+//!
+//! This module defines the `Serializable` and `Message` traits which are used
+//! for (de)serializing Bitcoin objects for transmission on the network. It
+//! also defines (de)serialization routines for many primitives.
+//!
+
+use collections::Vec;
+use collections::bitv::{Bitv, from_bytes};
 use std::io::{IoError, IoResult, InvalidInput, OtherIoError, standard_error};
-use std::mem::{to_le16, to_le32, to_le64};
 use std::mem::transmute;
 
 use util::iter::{FixedTake, FixedTakeable};
 use util::hash::Sha256dHash;
 
 #[deriving(PartialEq, Clone, Show)]
-pub struct CommandString {
-  data: String
-}
-
-impl CommandString {
-  pub fn new(data: &str) -> CommandString {
-    CommandString {
-      data: String::from_str(data)
-    }
-  }
-}
+/// A string which must be encoded as 12 bytes, used in network message headers
+pub struct CommandString(pub String);
 
 impl Str for CommandString {
   fn as_slice<'a>(&'a self) -> &'a str {
-    self.data.as_slice()
+    let &CommandString(ref inner_str) = self;
+    inner_str.as_slice()
   }
 }
 
 #[deriving(PartialEq, Clone, Show)]
-pub struct CheckedData {
-  data: Vec<u8>
-}
+/// Data which must be preceded by a 4-byte checksum
+pub struct CheckedData(pub Vec<u8>);
 
-impl CheckedData {
-  pub fn from_vec(data: Vec<u8>) -> CheckedData {
-    CheckedData { data: data }
-  }
-
-  pub fn data(self) -> Vec<u8> {
-    self.data
-  }
-}
-
-/// A message which can be sent on the Bitcoin network
-pub trait Serializable : Send {
+/// An object which can be (de)serialized. If the object can be sent on the
+/// Bitcoin network, the serialization must be the standard p2p network
+/// serialization.
+pub trait Serializable {
   /// Turn an object into a bytestring that can be put on the wire
   fn serialize(&self) -> Vec<u8>;
   /// Read an object off the wire
   fn deserialize<I: Iterator<u8>>(iter: I) -> IoResult<Self>;
+  /// Obtain a hash of the object
+  fn hash(&self) -> Sha256dHash {
+    Sha256dHash::from_data(self.serialize().as_slice())
+  }
 }
 
+/// A message which can be sent on the Bitcoin network
 pub trait Message : Serializable {
-  fn command(&self) -> CommandString;
+  /// Returns the name of the message as encoded in the network header
+  fn command(&self) -> String;
 }
 
+/// A variable-length unsigned integer
 pub enum VarInt {
+  /// 8-bit int
   VarU8(u8),
+  /// 16-bit int
   VarU16(u16),
+  /// 32-bit int
   VarU32(u32),
+  /// 64-bit int
   VarU64(u64)
 }
 
-/// Utility functions
+// Utility functions
+/// Convert a Rust uint to a Bitcoin network Varint
 pub fn u64_to_varint(n: u64) -> VarInt {
   match n {
     n if n < 0xFD => VarU8(n as u8),
@@ -82,6 +85,7 @@ pub fn u64_to_varint(n: u64) -> VarInt {
   }
 }
 
+/// Convert a Bitcoin network Varint to a Rust uint
 pub fn varint_to_u64(n: VarInt) -> u64 {
   match n {
     VarU8(m) => m as u64,
@@ -102,7 +106,7 @@ fn read_uint_le<I: Iterator<u8>>(mut iter: FixedTake<I>) -> Option<u64> {
 /// Do a double-SHA256 on some data and return the first 4 bytes
 fn sha2_checksum(data: &[u8]) -> u32 {
   let checksum = Sha256dHash::from_data(data);
-  read_uint_le(checksum.data().iter().map(|n| *n).fixed_take(4)).unwrap() as u32
+  read_uint_le(checksum.as_slice().iter().map(|n| *n).fixed_take(4)).unwrap() as u32
 }
 
 /// Primitives
@@ -134,7 +138,7 @@ impl Serializable for u8 {
 
 impl Serializable for u16 {
   fn serialize(&self) -> Vec<u8> {
-    unsafe { Vec::from_slice(transmute::<_, [u8, ..2]>(to_le16(*self))) }
+    unsafe { Vec::from_slice(transmute::<_, [u8, ..2]>(self.to_le())) }
   }
 
   fn deserialize<I: Iterator<u8>>(iter: I) -> IoResult<u16> {
@@ -147,7 +151,7 @@ impl Serializable for u16 {
 
 impl Serializable for u32 {
   fn serialize(&self) -> Vec<u8> {
-    unsafe { Vec::from_slice(transmute::<_, [u8, ..4]>(to_le32(*self))) }
+    unsafe { Vec::from_slice(transmute::<_, [u8, ..4]>(self.to_le())) }
   }
 
   fn deserialize<I: Iterator<u8>>(iter: I) -> IoResult<u32> {
@@ -160,7 +164,7 @@ impl Serializable for u32 {
 
 impl Serializable for i32 {
   fn serialize(&self) -> Vec<u8> {
-    unsafe { Vec::from_slice(transmute::<_, [u8, ..4]>(to_le32(*self as u32))) }
+    unsafe { Vec::from_slice(transmute::<_, [u8, ..4]>(self.to_le())) }
   }
 
   fn deserialize<I: Iterator<u8>>(iter: I) -> IoResult<i32> {
@@ -173,7 +177,7 @@ impl Serializable for i32 {
 
 impl Serializable for u64 {
   fn serialize(&self) -> Vec<u8> {
-    unsafe { Vec::from_slice(transmute::<_, [u8, ..8]>(to_le64(*self))) }
+    unsafe { Vec::from_slice(transmute::<_, [u8, ..8]>(self.to_le())) }
   }
 
   fn deserialize<I: Iterator<u8>>(iter: I) -> IoResult<u64> {
@@ -186,7 +190,7 @@ impl Serializable for u64 {
 
 impl Serializable for i64 {
   fn serialize(&self) -> Vec<u8> {
-    unsafe { Vec::from_slice(transmute::<_, [u8, ..8]>(to_le64(*self as u64))) }
+    unsafe { Vec::from_slice(transmute::<_, [u8, ..8]>(self.to_le())) }
   }
 
   fn deserialize<I: Iterator<u8>>(iter: I) -> IoResult<i64> {
@@ -266,9 +270,10 @@ serialize_fixvec!(4, 12, 16, 32)
 
 impl Serializable for CheckedData {
   fn serialize(&self) -> Vec<u8> {
-    let mut ret = (self.data.len() as u32).serialize();
-    ret.extend(sha2_checksum(self.data.as_slice()).serialize().move_iter());
-    ret.extend(self.data.iter().map(|n| *n));
+    let &CheckedData(ref data) = self;
+    let mut ret = (data.len() as u32).serialize();
+    ret.extend(sha2_checksum(data.as_slice()).serialize().move_iter());
+    ret.extend(data.iter().map(|n| *n));
     ret
   }
 
@@ -279,12 +284,16 @@ impl Serializable for CheckedData {
     let mut fixiter = iter.fixed_take(length as uint);
     let v: Vec<u8> =  FromIterator::from_iter(fixiter.by_ref());
     if fixiter.is_err() {
-      return Err(standard_error(InvalidInput));
+      return Err(IoError {
+        kind: InvalidInput,
+        desc: "overrun",
+        detail: Some(format!("data length given as {:}, but read fewer bytes", length))
+      });
     }
 
     let expected_checksum = sha2_checksum(v.as_slice());
     if checksum == expected_checksum {
-      Ok(CheckedData::from_vec(v))
+      Ok(CheckedData(v))
     } else {
       Err(IoError {
         kind: OtherIoError,
@@ -315,8 +324,9 @@ impl Serializable for String {
 
 impl Serializable for CommandString {
   fn serialize(&self) -> Vec<u8> {
+    let &CommandString(ref inner_str) = self;
     let mut rawbytes = [0u8, ..12]; 
-    rawbytes.copy_from(self.data.as_bytes().as_slice());
+    rawbytes.copy_from(inner_str.as_bytes().as_slice());
     Vec::from_slice(rawbytes.as_slice())
   }
 
@@ -326,7 +336,7 @@ impl Serializable for CommandString {
     // Once we've read the string, run out the iterator
     for _ in fixiter {}
     match fixiter.is_err() {
-      false => Ok(CommandString { data: rv }),
+      false => Ok(CommandString(rv)),
       true => Err(standard_error(InvalidInput))
     }
   }
@@ -334,12 +344,7 @@ impl Serializable for CommandString {
 
 impl<T: Serializable> Serializable for Vec<T> {
   fn serialize(&self) -> Vec<u8> {
-    let n_elems = match self.len() { 
-      n if n > 0xFFFFFFFF => VarU64(n as u64),
-      n if n > 0xFFFF     => VarU32(n as u32),
-      n if n > 0xFC       => VarU16(n as u16),
-      n => VarU8(n as u8)
-    };
+    let n_elems = u64_to_varint(self.len() as u64);
     let mut rv = n_elems.serialize();
     for elem in self.iter() {
       rv.extend(elem.serialize().move_iter());
@@ -355,6 +360,60 @@ impl<T: Serializable> Serializable for Vec<T> {
       n_elems -= 1;
     }
     Ok(v)
+  }
+}
+
+impl<T:Serializable> Serializable for Option<T> {
+  fn serialize(&self) -> Vec<u8> {
+    match self {
+      &Some(ref dat) => {
+        let mut ret = vec![1];
+        ret.extend(dat.serialize().move_iter());
+        ret
+      },
+      &None => vec![0]
+    }
+  }
+
+  fn deserialize<I: Iterator<u8>>(mut iter: I) -> IoResult<Option<T>> {
+    match iter.next() {
+      Some(0) => Ok(None),
+      Some(1) => Ok(Some(try!(Serializable::deserialize(iter)))),
+      _ => Err(standard_error(InvalidInput))
+    }
+  }
+}
+
+impl <T:Serializable> Serializable for Box<T> {
+  fn serialize(&self) -> Vec<u8> {
+    (**self).serialize()
+  }
+
+  fn deserialize<I: Iterator<u8>>(iter: I) -> IoResult<Box<T>> {
+    let ret: T = try!(Serializable::deserialize(iter));
+    Ok(box ret)
+  }
+}
+
+impl Serializable for Bitv {
+  fn serialize(&self) -> Vec<u8> {
+    let n_elems = u64_to_varint(self.len() as u64);
+    let mut rv = n_elems.serialize();
+    for elem in self.to_bytes().iter() {
+      rv.extend(elem.serialize().move_iter());
+    }
+    rv
+  }
+
+  fn deserialize<I: Iterator<u8>>(mut iter: I) -> IoResult<Bitv> {
+    let n_elems = varint_to_u64(try!(Serializable::deserialize(iter.by_ref())));
+    let mut v: Vec<u8> = vec![];
+    for _ in range(0, (n_elems + 7) / 8) {
+      v.push(try!(Serializable::deserialize(iter.by_ref())));
+    }
+    let mut ret = from_bytes(v.as_slice());
+    ret.truncate(n_elems as uint);  // from_bytes will round up to 8
+    Ok(ret)
   }
 }
 
@@ -420,15 +479,38 @@ fn serialize_strbuf_test() {
 
 #[test]
 fn serialize_commandstring_test() {
-  let cs = CommandString::new("Andrew");
+  let cs = CommandString(String::from_str("Andrew"));
   assert_eq!(cs.as_slice(), "Andrew");
   assert_eq!(cs.serialize(), vec![0x41u8, 0x6e, 0x64, 0x72, 0x65, 0x77, 0, 0, 0, 0, 0, 0]);
 }
 
 #[test]
 fn serialize_checkeddata_test() {
-  let cd = CheckedData::from_vec(vec![1u8, 2, 3, 4, 5]);
+  let cd = CheckedData(vec![1u8, 2, 3, 4, 5]);
   assert_eq!(cd.serialize(), vec![5, 0, 0, 0, 162, 107, 175, 90, 1, 2, 3, 4, 5]);
+}
+
+#[test]
+fn serialize_box_test() {
+  assert_eq!((box 1u8).serialize(), vec![1u8]);
+  assert_eq!((box 1u16).serialize(), vec![1u8, 0]);
+  assert_eq!((box 1u64).serialize(), vec![1u8, 0, 0, 0, 0, 0, 0, 0]);
+}
+
+
+#[test]
+fn serialize_option_test() {
+  let none: Option<u8> = None;
+  let none_ser = none.serialize();
+  let some_ser = Some(0xFFu8).serialize();
+  assert_eq!(none_ser, vec![0]);
+  assert_eq!(some_ser, vec![1, 0xFF]);
+}
+
+#[test]
+fn serialize_bitv_test() {
+  let bv = Bitv::new(10, true);
+  assert_eq!(bv.serialize(), vec![10, 0xFF, 0xC0]);
 }
 
 #[test]
@@ -488,7 +570,7 @@ fn deserialize_strbuf_test() {
 fn deserialize_commandstring_test() {
   let cs: IoResult<CommandString> = Serializable::deserialize([0x41u8, 0x6e, 0x64, 0x72, 0x65, 0x77, 0, 0, 0, 0, 0, 0].iter().map(|n| *n));
   assert!(cs.is_ok());
-  assert_eq!(cs.unwrap(), CommandString { data: String::from_str("Andrew") });
+  assert_eq!(cs.unwrap(), CommandString(String::from_str("Andrew")));
 
   let short_cs: IoResult<CommandString> = Serializable::deserialize([0x41u8, 0x6e, 0x64, 0x72, 0x65, 0x77, 0, 0, 0, 0, 0].iter().map(|n| *n));
   assert!(short_cs.is_err());
@@ -498,13 +580,31 @@ fn deserialize_commandstring_test() {
 fn deserialize_checkeddata_test() {
   let cd: IoResult<CheckedData> = Serializable::deserialize([5u8, 0, 0, 0, 162, 107, 175, 90, 1, 2, 3, 4, 5].iter().map(|n| *n));
   assert!(cd.is_ok());
-  assert_eq!(cd.unwrap().data().as_slice(), &[1u8, 2, 3, 4, 5]);
+  assert_eq!(cd.unwrap(), CheckedData(Vec::from_slice([1u8, 2, 3, 4, 5])));
 }
 
+#[test]
+fn deserialize_option_test() {
+  let none: IoResult<Option<u8>> = Serializable::deserialize([0u8].iter().map(|n| *n));
+  let good: IoResult<Option<u8>> = Serializable::deserialize([1u8, 0xFF].iter().map(|n| *n));
+  let bad: IoResult<Option<u8>> = Serializable::deserialize([2u8].iter().map(|n| *n));
+  assert!(bad.is_err());
+  assert_eq!(none, Ok(None));
+  assert_eq!(good, Ok(Some(0xFF)));
+}
 
+#[test]
+fn deserialize_box_test() {
+  let zero: IoResult<Box<u8>> = Serializable::deserialize([0u8].iter().map(|n| *n));
+  let one: IoResult<Box<u8>> = Serializable::deserialize([1u8].iter().map(|n| *n));
+  assert_eq!(zero, Ok(box 0));
+  assert_eq!(one, Ok(box 1));
+}
 
-
-
-
-
+#[test]
+fn deserialize_bitv_test() {
+  let bv: IoResult<Bitv> = Serializable::deserialize([10u8, 0xFF, 0xC0].iter().map(|n| *n));
+  assert!(bv.is_ok());
+  assert_eq!(bv.unwrap(), Bitv::new(10, true));
+}
 

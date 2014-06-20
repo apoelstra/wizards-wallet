@@ -12,6 +12,11 @@
 // If not, see <http://creativecommons.org/publicdomain/zero/1.0/>.
 //
 
+//! # Sockets
+//!
+//! This module provides support for low-level network communication.
+//!
+
 use time::now;
 use std::rand::task_rng;
 use rand::Rng;
@@ -25,10 +30,14 @@ use network::serialize::CommandString;
 use network::serialize::Message;
 use network::serialize::Serializable;
 use network::message_network::VersionMessage;
+use util::misc::prepend_err;
 
+/// Network message with header removed
 pub struct MessageData {
+  /// Raw message data
   pub data: Vec<u8>,
-  pub command: CommandString
+  /// The type as given in the network header
+  pub command: String
 }
 
 /// Format an IP address in the 16-byte bitcoin protocol serialization
@@ -45,17 +54,24 @@ fn ipaddr_to_bitcoin_addr(ipaddr: &ip::IpAddr) -> [u8, ..16] {
   } 
 }
 
-/// A message which can be sent on the Bitcoin network
+/// A network socket along with information about the peer
+#[deriving(Clone)]
 pub struct Socket {
+  /// The underlying network data stream
   stream: Option<tcp::TcpStream>,
+  /// Services supported by us
   pub services: u64,
+  /// Our user agent
   pub user_agent: String,
+  /// Nonce to identify our `version` messages
   pub version_nonce: u64,
+  /// Network magic
   pub magic: u32
 }
 
 impl Socket {
   // TODO: we fix services to 0
+  /// Construct a new socket
   pub fn new(magic: u32) -> Socket {
     let mut rng = task_rng();
     Socket {
@@ -64,9 +80,10 @@ impl Socket {
       version_nonce: rng.gen(),
       user_agent: String::from_str(constants::USER_AGENT),
       magic: magic
-   }
+    }
   }
 
+  /// Connect to the peer
   pub fn connect(&mut self, host: &str, port: u16) -> IoResult<()> {
     match tcp::TcpStream::connect(host, port) {
       Ok(s)  => {
@@ -145,11 +162,11 @@ impl Socket {
       Err(standard_error(NotConnected))
     }
     else {
-      let payload = CheckedData::from_vec(message.serialize());
+      let payload = message.serialize();
 
       let mut wire_message = self.magic.serialize();
-      wire_message.extend(message.command().serialize().move_iter());
-      wire_message.extend(payload.serialize().move_iter());
+      wire_message.extend(CommandString(message.command()).serialize().move_iter());
+      wire_message.extend(CheckedData(payload).serialize().move_iter());
 
       let stream = self.stream.get_mut_ref();
       match stream.write(wire_message.as_slice()) {
@@ -159,30 +176,31 @@ impl Socket {
     }
   }
 
+  /// Receive the next message from the peer, decoding the network header
+  /// and verifying its correctness. Returns the undecoded payload.
   pub fn receive_message(&mut self) -> IoResult<MessageData> {
     match self.stream {
       None => Err(standard_error(NotConnected)),
       Some(ref mut s) => {
-        let mut recv_buf = [0u8, ..0x10000];  // 64K recv buffer copied from bitcoind
-        match s.read(recv_buf.as_mut_slice()) {
-          Ok(_) => {
-            let mut iter = recv_buf.iter().map(|n| *n);
-            let magic: u32 = try!(Serializable::deserialize(iter.by_ref()));
-            let command: CommandString = try!(Serializable::deserialize(iter.by_ref()));
-            let payload: CheckedData = try!(Serializable::deserialize(iter.by_ref()));
-
-            // Check magic
-            if magic != self.magic {
-              return Err(IoError {
-                kind: OtherIoError,
-                desc: "bad magic",
-                detail: Some(format!("magic {:x} did not match network magic {:}", magic, self.magic)),
-              });
-            }
-
-            Ok(MessageData { command: command, data: payload.data() })
+        let mut read_err = None;
+        let ret = {
+          let mut iter = s.bytes().filter_map(|res| match res { Ok(ch) => Some(ch), Err(e) => { read_err = Some(e); None } });
+          let magic: u32 = try!(prepend_err("magic", Serializable::deserialize(iter.by_ref())));
+          // Check magic before decoding further
+          if magic != self.magic {
+            return Err(IoError {
+              kind: OtherIoError,
+              desc: "bad magic",
+              detail: Some(format!("magic {:x} did not match network magic {:x}", magic, self.magic)),
+            });
           }
-          Err(e) => Err(e)
+          let CommandString(command): CommandString = try!(prepend_err("command", Serializable::deserialize(iter.by_ref())));
+          let CheckedData(payload): CheckedData = try!(prepend_err("payload", Serializable::deserialize(iter.by_ref())));
+          MessageData { command: command, data: payload }
+        };
+        match read_err {
+          Some(e) => Err(e),
+          _ => Ok(ret)
         }
       }
     }

@@ -12,34 +12,54 @@
 // If not, see <http://creativecommons.org/publicdomain/zero/1.0/>.
 //
 
+//! # Network-related network messages
+//!
+//! This module defines network messages which describe peers and their
+//! capabilities
+//!
+
 use std::io::IoResult;
 #[cfg(test)]
 use serialize::hex::FromHex;
 
 use network::constants;
 use network::address::Address;
-use network::serialize::CommandString;
 use network::serialize::Message;
 use network::serialize::Serializable;
 use network::socket::Socket;
 
 /// Some simple messages
+
+/// The `version` message
 pub struct VersionMessage {
+  /// The P2P network protocol version
   pub version: u32,
+  /// A bitmask describing the services supported by this node
   pub services: u64,
+  /// The time at which the `version` message was sent
   pub timestamp: i64,
+  /// The network address of the peer receiving the message
   pub receiver: Address,
+  /// The network address of the peer sending the message
   pub sender: Address,
+  /// A random nonce used to detect loops in the network
   pub nonce: u64,
+  /// A string describing the peer's software
   pub user_agent: String,
+  /// The height of the maxmimum-work blockchain that the peer is aware of
   pub start_height: i32,
+  /// Whether the receiving peer should relay messages to the sender; used
+  /// if the sender is bandwidth-limited and would like to support bloom
+  /// filtering. Defaults to true.
   pub relay: bool
 }
 
+/// The `verack` message
 pub struct VersionAckMessage;
 
 impl VersionMessage {
   // TODO: we have fixed services and relay to 0
+  /// Constructs a new `version` message
   pub fn new(timestamp: i64, mut socket: Socket, nonce: u64, start_height: i32) -> IoResult<VersionMessage> {
     let recv_addr = socket.receiver_address();
     let send_addr = socket.sender_address();
@@ -64,11 +84,25 @@ impl VersionMessage {
       relay: false
     })
   }
-
-  fn command() -> CommandString {
-    CommandString::new("version")
-  }
 }
+
+impl_message!(VersionMessage, "version")
+
+/// The `ping` message
+pub struct PingMessage {
+  /// A random nonce which should be matched in the responding `pong`
+  pub nonce: u64
+}
+impl_serializable!(PingMessage, nonce)
+impl_message!(PingMessage, "ping")
+
+/// The `pong` message
+pub struct PongMessage {
+  /// A random nonce which matches the `ping` that sent it
+  pub nonce: u64
+}
+impl_serializable!(PongMessage, nonce)
+impl_message!(PongMessage, "pong")
 
 impl Serializable for VersionMessage {
   fn serialize(&self) -> Vec<u8> {
@@ -102,27 +136,16 @@ impl Serializable for VersionMessage {
   }
 }
 
-impl Message for VersionMessage {
-  fn command(&self) -> CommandString {
-    VersionMessage::command()
-  }
-}
-
-
 impl VersionAckMessage {
+  /// Constructs a new `verack` message
   pub fn new() -> VersionAckMessage { VersionAckMessage }
-  pub fn command() -> CommandString { CommandString::new("verack") }
 }
+
+impl_message!(VersionAckMessage, "verack")
 
 impl Serializable for VersionAckMessage {
   fn serialize(&self) -> Vec<u8> { vec![] }
   fn deserialize<I: Iterator<u8>>(_: I) -> IoResult<VersionAckMessage> { Ok(VersionAckMessage) }
-}
-
-impl Message for VersionAckMessage {
-  fn command(&self) -> CommandString {
-    VersionAckMessage::command()
-  }
 }
 
 #[test]

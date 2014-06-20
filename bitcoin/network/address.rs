@@ -12,14 +12,23 @@
 // If not, see <http://creativecommons.org/publicdomain/zero/1.0/>.
 //
 
+//! # Bitcoin network addresses
+//!
+//! This module defines the structures and functions needed to encode
+//! network addresses in Bitcoin messages.
+//!
+
 use std::io::{IoResult, standard_error, InvalidInput};
 
 use network::serialize::Serializable;
 
 /// A message which can be sent on the Bitcoin network
 pub struct Address {
+  /// Services provided by the peer whose address this is
   pub services: u64,
+  /// Network byte-order ipv6 address, or ipv4-mapped ipv6 address
   pub address: [u8, ..16],
+  /// Network port
   pub port: u16
 }
 
