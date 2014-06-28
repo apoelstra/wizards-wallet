@@ -25,6 +25,8 @@ use bitcoin::network::message_blockdata::{GetDataMessage, GetHeadersMessage};
 use bitcoin::util::misc::consume_err;
 use bitcoin::util::hash::zero_hash;
 
+use user_data;
+
 pub struct Bitcoind {
   peer_address: String,
   peer_port: u16,
@@ -35,11 +37,21 @@ pub struct Bitcoind {
 }
 
 impl Bitcoind {
-  pub fn new(peer_address: &str, peer_port: u16) -> Bitcoind {
+  pub fn new(peer_address: &str, peer_port: u16, blockchain_path: &Path) -> Bitcoind {
     Bitcoind {
       peer_address: String::from_str(peer_address),
       peer_port: peer_port,
-      blockchain: Blockchain::new(genesis_block().header),
+      // Load blockchain from disk
+      blockchain: match Serializable::deserialize_file(blockchain_path) {
+        Ok(blockchain) => {
+  let blockchain: Blockchain = blockchain;
+println!("Read blockchain, best tip {:x}", blockchain.best_tip().hash());
+  blockchain },
+        Err(e) => {
+          println!("Failed to load blockchain: {:}, starting from genesis.", e);
+          Blockchain::new(genesis_block().header)
+        }
+      },
       channels: None,
       sock: None,
       last_best_tip: None
@@ -110,6 +122,10 @@ impl Bitcoind {
                 self.sock.get_mut_ref().send_message(&GetHeadersMessage::new(self.blockchain.locator_hashes(), zero_hash())));
             } else {
               println!("Done sync.");
+              match self.blockchain.serialize_file(&user_data::blockchain_path()) {
+                Ok(()) => { println!("Successfully saved blockchain.") },
+                Err(e) => { println!("failed to write blockchain: {:}", e); }
+              }
             }
             self.last_best_tip = Some(*new_best_tip.clone());
           }

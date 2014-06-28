@@ -19,7 +19,7 @@ use collections::bitv::{Bitv, from_bytes};
 use core::char::from_digit;
 use core::cmp::min;
 use std::fmt::{LowerHex, Formatter, Result};
-use std::io::{IoResult, InvalidInput, standard_error};
+use std::io::{IoResult, IoError, InvalidInput};
 use std::mem::transmute;
 
 use crypto::digest::Digest;
@@ -99,7 +99,11 @@ impl Serializable for Sha256dHash {
     }
     match fixediter.is_err() {
       false => Ok(Sha256dHash(ret)),
-      true => Err(standard_error(InvalidInput))
+      true => Err(IoError {
+        kind: InvalidInput,
+        desc: "unexpected end of input",
+        detail: Some(format!("Need 32 bytes, was {:} short.", fixediter.remaining()))
+      })
     }
   }
 }

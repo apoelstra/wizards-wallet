@@ -25,7 +25,7 @@
 
 use std::io::IoResult;
 use util::hash::Sha256dHash;
-use network::serialize::Serializable;
+use network::serialize::{Serializable, SerializeIter};
 use blockdata::script::Script;
 #[cfg(test)]
 use util::misc::hex_bytes;

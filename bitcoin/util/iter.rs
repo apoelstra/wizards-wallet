@@ -17,6 +17,20 @@
 //! Iterator adaptors needed by Bitcoin but not provided by the Rust
 //! standard library.
 
+/// An iterator that just returns None
+pub struct NullIterator<T>;
+impl<T> Iterator<T> for NullIterator<T> {
+  #[inline]
+  fn next(&mut self) -> Option<T> { None }
+  #[inline]
+  fn size_hint(&self) -> (uint, Option<uint>) { (0, Some(0)) }
+}
+
+impl<T> NullIterator<T> {
+  /// Creates a new NullIterator
+  pub fn new() -> NullIterator<T> { NullIterator }
+}
+
 /// An Iterator which will give n elements of the contained iterator
 /// before returning None. If the contained iterator returns None too
 /// early,
@@ -52,6 +66,11 @@ impl<I> FixedTake<I> {
   /// Indicates whether the underlying iterator has ended early
   pub fn is_err(&self) -> bool {
     self.is_err
+  }
+
+  /// Number of remaining elements
+  pub fn remaining(&self) -> uint {
+    self.n_elems
   }
 }
 

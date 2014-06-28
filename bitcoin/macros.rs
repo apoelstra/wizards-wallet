@@ -24,9 +24,19 @@ macro_rules! impl_serializable(
         ret
       }
 
+      fn serialize_iter<'a>(&'a self) -> SerializeIter<'a> {
+        SerializeIter {
+          data_iter: None,
+          sub_iter_iter: box vec![ $( &self.$field as &Serializable, )+ ].move_iter(),
+          sub_iter: None,
+          sub_started: false
+        }
+      }
+
       fn deserialize<I: Iterator<u8>>(mut iter: I) -> IoResult<$thing> {
+        use util::misc::prepend_err;
         Ok($thing {
-          $( $field: try!(Serializable::deserialize(iter.by_ref())), )+
+          $( $field: try!(prepend_err(stringify!($field), Serializable::deserialize(iter.by_ref()))), )+
         })
       }
     }

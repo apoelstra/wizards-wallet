@@ -48,8 +48,10 @@ extern crate bitcoin;
 use std::io::timer;
 
 use bitcoind::Bitcoind;
+use user_data::blockchain_path;
 
 mod bitcoind;
+mod user_data;
 
 /// Entry point
 fn main()
@@ -57,7 +59,7 @@ fn main()
   println!("Starting the Wizards' Wallet");
 
   // Connect to bitcoind
-  let mut bitcoind = Bitcoind::new("127.0.0.1", 8333);
+  let mut bitcoind = Bitcoind::new("127.0.0.1", 8333, &blockchain_path());
   // Loop until we get a successful connection
   loop {
     match bitcoind.listen() {

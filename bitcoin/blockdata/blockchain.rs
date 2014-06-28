@@ -24,9 +24,10 @@ use std::io::{IoResult, IoError, OtherIoError};
 
 use blockdata::block::BlockHeader;
 use blockdata::constants::{DIFFCHANGE_INTERVAL, DIFFCHANGE_TIMESPAN, max_target};
-use network::serialize::Serializable;
+use network::serialize::{Serializable, SerializeIter};
 use util::uint256::Uint256;
 use util::hash::Sha256dHash;
+use util::misc::prepend_err;
 use util::patricia_tree::PatriciaTree;
 
 /// A link in the blockchain
@@ -71,44 +72,62 @@ impl Serializable for Rc<BlockchainNode> {
 
   fn deserialize<I: Iterator<u8>>(mut iter: I) -> IoResult<Rc<BlockchainNode>> {
     Ok(Rc::new(BlockchainNode {
-      header: try!(Serializable::deserialize(iter.by_ref())),
-      total_work: try!(Serializable::deserialize(iter.by_ref())),
-      required_difficulty: try!(Serializable::deserialize(iter.by_ref())),
-      height: try!(Serializable::deserialize(iter.by_ref())),
+      header: try!(prepend_err("header", Serializable::deserialize(iter.by_ref()))),
+      total_work: try!(prepend_err("total_work", Serializable::deserialize(iter.by_ref()))),
+      required_difficulty: try!(prepend_err("req_difficulty", Serializable::deserialize(iter.by_ref()))),
+      height: try!(prepend_err("height", Serializable::deserialize(iter.by_ref()))),
       prev: RefCell::new(None)
     }))
+  }
+
+  // Override Serialize::hash to return the blockheader hash, since the
+  // hash of the node itself is pretty much meaningless.
+  fn hash(&self) -> Sha256dHash {
+    self.header.hash()
   }
 }
 
 /// The blockchain
 pub struct Blockchain {
   tree: PatriciaTree<Rc<BlockchainNode>>,
-  best_tip: Rc<BlockchainNode>
+  best_tip: Rc<BlockchainNode>,
+  best_hash: Sha256dHash
 }
 
 impl Serializable for Blockchain {
   fn serialize(&self) -> Vec<u8> {
     let mut ret = vec![];
     ret.extend(self.tree.serialize().move_iter());
-    ret.extend(self.best_tip.header.hash().serialize().move_iter());
+    ret.extend(self.best_hash.serialize().move_iter());
     ret
   }
 
+  fn serialize_iter<'a>(&'a self) -> SerializeIter<'a> {
+    SerializeIter {
+      data_iter: None,
+      sub_iter_iter: box vec![ &self.tree as &Serializable,
+                               &self.best_hash as &Serializable ].move_iter(),
+      sub_iter: None,
+      sub_started: false
+    }
+  }
+
   fn deserialize<I: Iterator<u8>>(mut iter: I) -> IoResult<Blockchain> {
-    let tree: PatriciaTree<Rc<BlockchainNode>> = try!(Serializable::deserialize(iter.by_ref()));
-    let hash: Sha256dHash = try!(Serializable::deserialize(iter.by_ref()));
+    let tree: PatriciaTree<Rc<BlockchainNode>> = try!(prepend_err("tree", Serializable::deserialize(iter.by_ref())));
+    let hash: Sha256dHash = try!(prepend_err("besthash", Serializable::deserialize(iter.by_ref())));
     let best = match tree.lookup(&hash.as_bitv()) {
       Some(rc) => rc.clone(),
       None => { return Err(IoError {
           kind: OtherIoError,
           desc: "best tip reference not found in tree",
-          detail: None
+          detail: Some(format!("best tip {:x} not found", hash))
         });
       }
     };
     Ok(Blockchain {
       tree: tree,
-      best_tip: best.clone()
+      best_tip: best.clone(),
+      best_hash: best.hash()
     })
   }
 }
@@ -129,7 +148,7 @@ impl<'tree> LocatorHashIter<'tree> {
 impl<'tree> Iterator<Sha256dHash> for LocatorHashIter<'tree> {
   fn next(&mut self) -> Option<Sha256dHash> {
     let ret = match self.index {
-      Some(ref node) => Some(node.header.hash()),
+      Some(ref node) => Some(node.hash()),
       None => None
     };
 
@@ -180,6 +199,7 @@ impl Blockchain {
         pat.insert(&genhash, rc_gen.clone());
         pat
       },
+      best_hash: rc_gen.hash(),
       best_tip: rc_gen
     }
   }
@@ -240,9 +260,15 @@ impl Blockchain {
     self.tree.insert(&header.hash().as_bitv(), rc_header.clone());
     // Replace the best tip if necessary
     if rc_header.total_work > self.best_tip.total_work {
-      self.best_tip = rc_header;
+      self.set_best_tip(rc_header);
     }
     return true;
+  }
+
+  /// Sets the best tip (not public)
+  fn set_best_tip(&mut self, tip: Rc<BlockchainNode>) {
+    self.best_hash = tip.hash();
+    self.best_tip = tip;
   }
 
   /// Returns the best tip
@@ -256,7 +282,29 @@ impl Blockchain {
   }
 }
 
+#[cfg(test)]
+mod tests {
+  use std::prelude::*;
+  use std::io::IoResult;
 
+  use blockdata::blockchain::Blockchain;
+  use blockdata::constants::genesis_block;
+  use network::serialize::Serializable;
+
+  #[test]
+  fn blockchain_serialize_test() {
+    let empty_chain = Blockchain::new(genesis_block().header);
+    assert_eq!(empty_chain.best_tip.hash().serialize(), genesis_block().header.hash().serialize());
+
+    let serial = empty_chain.serialize();
+    assert_eq!(serial, empty_chain.serialize_iter().collect());
+
+    let deserial: IoResult<Blockchain> = Serializable::deserialize(serial.iter().map(|n| *n));
+    assert!(deserial.is_ok());
+    let read_chain = deserial.unwrap();
+    assert_eq!(read_chain.best_tip.hash().serialize(), genesis_block().header.hash().serialize());
+  }
+}
 
 
 

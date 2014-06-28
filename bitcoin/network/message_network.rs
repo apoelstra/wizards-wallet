@@ -25,7 +25,7 @@ use serialize::hex::FromHex;
 use network::constants;
 use network::address::Address;
 use network::serialize::Message;
-use network::serialize::Serializable;
+use network::serialize::{Serializable, SerializeIter};
 use network::socket::Socket;
 
 /// Some simple messages

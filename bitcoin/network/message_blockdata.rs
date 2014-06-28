@@ -27,7 +27,7 @@ use util::hash::zero_hash;
 use blockdata::block::{Block, LoneBlockHeader};
 use network::constants;
 use network::serialize::Message;
-use network::serialize::Serializable;
+use network::serialize::{Serializable, SerializeIter};
 use util::hash::Sha256dHash;
 
 #[deriving(PartialEq, Show)]

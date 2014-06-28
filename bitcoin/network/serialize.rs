@@ -22,10 +22,57 @@
 use collections::Vec;
 use collections::bitv::{Bitv, from_bytes};
 use std::io::{IoError, IoResult, InvalidInput, OtherIoError, standard_error};
+use std::io::{BufferedReader, BufferedWriter, File, Truncate, Write};
+use std::io::fs::rename;
 use std::mem::transmute;
 
-use util::iter::{FixedTake, FixedTakeable};
+use util::iter::{FixedTake, FixedTakeable, NullIterator};
 use util::hash::Sha256dHash;
+
+/// An iterator which returns serialized data one byte at a time
+pub struct SerializeIter<'a> {
+  /// Iterator over actual data
+  pub data_iter: Option<Box<Iterator<u8>>>,
+  /// Objects which are serialized through their own `SerializeIter`s
+  pub sub_iter_iter: Box<Iterator<&'a Serializable>>,
+  /// Current subiterator
+  pub sub_iter: Option<Box<SerializeIter<'a>>>,
+  /// Whether we have started using sub_iter_iter
+  pub sub_started: bool
+} 
+
+impl<'a> Iterator<u8> for SerializeIter<'a> {
+  fn next(&mut self) -> Option<u8> { 
+    let mut ret = None;
+    // Try to use the data iterator
+    if self.data_iter.is_some() {
+      // Unwrap the current data iterator to use it
+      let mut it = self.data_iter.take_unwrap();
+      ret = it.next();
+      // Delete the current data iterator if it's exhausted, by putting
+      // it back only when it's -not- exhausted
+      if ret.is_some() { self.data_iter = Some(it); }
+    }
+    // Failing that, start using the subobject iterator
+    if ret.is_none() && !self.sub_started {
+      // Unwrap the current data iterator to use it
+      self.sub_started = true;
+      self.sub_iter = self.sub_iter_iter.next().map(|obj| box obj.serialize_iter());
+    }
+    // If it doesn't work, find one that does
+    while ret.is_none() && self.sub_iter.is_some() {
+      let mut iter = self.sub_iter.take_unwrap();
+      ret = iter.next();
+      self.sub_iter = if ret.is_none() {
+          self.sub_iter_iter.next().map(|obj| box obj.serialize_iter())
+        } else {
+          Some(iter)
+        }
+    }
+    // Eventually we got Some(u8) --- or None and we're exhausted
+    ret
+  }
+}
 
 #[deriving(PartialEq, Clone, Show)]
 /// A string which must be encoded as 12 bytes, used in network message headers
@@ -48,11 +95,53 @@ pub struct CheckedData(pub Vec<u8>);
 pub trait Serializable {
   /// Turn an object into a bytestring that can be put on the wire
   fn serialize(&self) -> Vec<u8>;
+  /// Serialize an object, returning an iterator rather than complete vector
+  fn serialize_iter<'a>(&'a self) -> SerializeIter<'a> {
+    SerializeIter {
+      data_iter: Some(box self.serialize().move_iter() as Box<Iterator<u8>>),
+      sub_iter_iter: box NullIterator::<&Serializable>::new(),
+      sub_iter: None,
+      sub_started: false
+    }
+  }
   /// Read an object off the wire
   fn deserialize<I: Iterator<u8>>(iter: I) -> IoResult<Self>;
   /// Obtain a hash of the object
   fn hash(&self) -> Sha256dHash {
     Sha256dHash::from_data(self.serialize().as_slice())
+  }
+  /// Dump the object to a file
+  fn serialize_file(&self, p: &Path) -> IoResult<()> {
+    let tmp_path = p.with_extension("0");
+    {
+      let file = File::open_mode(&tmp_path, Truncate, Write);
+      let mut writer = BufferedWriter::new(file);
+      for ch in self.serialize_iter() {
+        try!(writer.write_u8(ch));
+      }
+      try!(writer.flush());
+    }
+    rename(&tmp_path, p)
+  }
+  /// Read the object from a file
+  fn deserialize_file(p: &Path) -> IoResult<Self> {
+    let file = try!(File::open(p));
+    let mut reader = BufferedReader::new(file);
+    let mut error: IoResult<u8> = Ok(0);
+    // This is kinda a hacky way to catch file read errors
+    let ret = Serializable::deserialize(reader.bytes().filter_map(|res| {
+        if res.is_err() {
+          error = res;
+          None
+        } else {
+          res.ok()
+        }
+      }));
+    // Return file error if there was one, else parse error
+    match error {
+      Ok(_) => ret,
+      Err(e) => Err(e)
+    }
   }
 }
 
@@ -363,7 +452,7 @@ impl<T: Serializable> Serializable for Vec<T> {
   }
 }
 
-impl<T:Serializable> Serializable for Option<T> {
+impl<T:Serializable+'static> Serializable for Option<T> {
   fn serialize(&self) -> Vec<u8> {
     match self {
       &Some(ref dat) => {
@@ -372,6 +461,23 @@ impl<T:Serializable> Serializable for Option<T> {
         ret
       },
       &None => vec![0]
+    }
+  }
+
+  fn serialize_iter<'a>(&'a self) -> SerializeIter<'a> {
+    match self {
+      &Some(ref dat) => SerializeIter {
+        data_iter: Some(box Some(1u8).move_iter() as Box<Iterator<u8>>),
+        sub_iter_iter: box vec![ dat as &Serializable ].move_iter(),
+        sub_iter: None,
+        sub_started: false
+      },
+      &None => SerializeIter {
+        data_iter: Some(box Some(0u8).move_iter() as Box<Iterator<u8>>),
+        sub_iter_iter: box NullIterator::<&Serializable>::new(),
+        sub_iter: None,
+        sub_started: false
+      }
     }
   }
 
@@ -387,6 +493,10 @@ impl<T:Serializable> Serializable for Option<T> {
 impl <T:Serializable> Serializable for Box<T> {
   fn serialize(&self) -> Vec<u8> {
     (**self).serialize()
+  }
+
+  fn serialize_iter<'a>(&'a self) -> SerializeIter<'a> {
+    (**self).serialize_iter()
   }
 
   fn deserialize<I: Iterator<u8>>(iter: I) -> IoResult<Box<T>> {
@@ -415,6 +525,14 @@ impl Serializable for Bitv {
     ret.truncate(n_elems as uint);  // from_bytes will round up to 8
     Ok(ret)
   }
+}
+
+#[test]
+fn serialize_iter_test() {
+  assert_eq!(true.serialize(), true.serialize_iter().collect());
+  assert_eq!(1u8.serialize(), 1u8.serialize_iter().collect());
+  assert_eq!(300u32.serialize(), 300u32.serialize_iter().collect());
+  assert_eq!(20u64.serialize(), 20u64.serialize_iter().collect());
 }
 
 #[test]
@@ -505,12 +623,16 @@ fn serialize_option_test() {
   let some_ser = Some(0xFFu8).serialize();
   assert_eq!(none_ser, vec![0]);
   assert_eq!(some_ser, vec![1, 0xFF]);
+
+  assert_eq!(none.serialize(), none.serialize_iter().collect());
+  assert_eq!(Some(true).serialize(), Some(true).serialize_iter().collect());
 }
 
 #[test]
 fn serialize_bitv_test() {
   let bv = Bitv::new(10, true);
   assert_eq!(bv.serialize(), vec![10, 0xFF, 0xC0]);
+  assert_eq!(bv.serialize(), bv.serialize_iter().collect());
 }
 
 #[test]

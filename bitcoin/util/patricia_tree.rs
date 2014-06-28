@@ -25,7 +25,8 @@ use core::iter::ByRef;
 use collections::bitv::Bitv;
 use std::io::{IoResult, InvalidInput, standard_error};
 
-use network::serialize::Serializable;
+use network::serialize::{Serializable, SerializeIter};
+use util::misc::prepend_err;
 
 /// Patricia troo
 pub struct PatriciaTree<T> {
@@ -298,6 +299,7 @@ impl<T:Show> PatriciaTree<T> {
   /// Print the entire tree
   pub fn print<'a>(&'a self) {
     fn recurse<'a, T:Show>(tree: &'a PatriciaTree<T>, depth: uint) {
+      println!("{:}: {:}", tree.skip_prefix, tree.data);
       // left gets no indentation
       match tree.child_l {
         Some(ref t) => {
@@ -325,20 +327,28 @@ impl<T:Show> PatriciaTree<T> {
   }
 }
 
-impl<T:Serializable> Serializable for PatriciaTree<T> {
+impl<T:Serializable+'static> Serializable for PatriciaTree<T> {
   fn serialize(&self) -> Vec<u8> {
     // Depth-first serialization
-    fn recurse<'a, T:Serializable>(tree: &'a PatriciaTree<T>, mut ret: Vec<u8>) -> Vec<u8> {
-      // Serialize self, then children
-      ret.extend(tree.skip_prefix.serialize().move_iter());
-      ret.extend(tree.data.serialize().move_iter());
-      ret.extend(tree.child_l.serialize().move_iter());
-      ret.extend(tree.child_r.serialize().move_iter());
-      ret
-    }
     let mut ret = vec![];
-    ret = recurse(self, ret);
+    // Serialize self, then children
+    ret.extend(self.skip_prefix.serialize().move_iter());
+    ret.extend(self.data.serialize().move_iter());
+    ret.extend(self.child_l.serialize().move_iter());
+    ret.extend(self.child_r.serialize().move_iter());
     ret
+  }
+
+  fn serialize_iter<'a>(&'a self) -> SerializeIter<'a> {
+    SerializeIter {
+      data_iter: None,
+      sub_iter_iter: box vec![ &self.skip_prefix as &Serializable,
+                               &self.data as &Serializable,
+                               &self.child_l as &Serializable,
+                               &self.child_r as &Serializable ].move_iter(),
+      sub_iter: None,
+      sub_started: false
+    }
   }
 
   fn deserialize<I: Iterator<u8>>(mut iter: I) -> IoResult<PatriciaTree<T>> {
@@ -346,15 +356,15 @@ impl<T:Serializable> Serializable for PatriciaTree<T> {
     // regress of ByRef<ByRef<...<ByRef<I>>...>>, see #15188
     fn recurse<T:Serializable, I: Iterator<u8>>(iter: &mut ByRef<I>) -> IoResult<PatriciaTree<T>> {
       Ok(PatriciaTree {
-        skip_prefix: try!(Serializable::deserialize(iter.by_ref())),
-        data: try!(Serializable::deserialize(iter.by_ref())),
+        skip_prefix: try!(prepend_err("skip_prefix", Serializable::deserialize(iter.by_ref()))),
+        data: try!(prepend_err("data", Serializable::deserialize(iter.by_ref()))),
         child_l: match iter.next() {
-                   Some(1) => Some(box try!(recurse(iter))),
+                   Some(1) => Some(box try!(prepend_err("child_l", recurse(iter)))),
                    Some(0) => None,
                    _ => { return Err(standard_error(InvalidInput)) }
                  },
         child_r: match iter.next() {
-                   Some(1) => Some(box try!(recurse(iter))),
+                   Some(1) => Some(box try!(prepend_err("child_r", recurse(iter)))),
                    Some(0) => None,
                    _ => { return Err(standard_error(InvalidInput)) }
                  }
@@ -450,7 +460,7 @@ mod tests {
     // Build a tree
     let mut tree = PatriciaTree::new();
     let mut hashes = vec![];
-    for i in range(0u32, 5000) {
+    for i in range(0u32, 2) {
       let hash = Sha256dHash::from_data(&[(i / 0x100) as u8, (i % 0x100) as u8]).as_bitv();
       tree.insert(&hash, i);
       hashes.push(hash);
@@ -458,6 +468,9 @@ mod tests {
 
     // Serialize it
     let serialized = tree.serialize();
+    // Check iterator
+    let serialized_1 = tree.serialize_iter().collect();
+    assert_eq!(serialized, serialized_1);
     // Deserialize it
     let deserialized: IoResult<PatriciaTree<u32>> = Serializable::deserialize(serialized.iter().map(|n| *n));
     assert!(deserialized.is_ok());

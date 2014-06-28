@@ -24,7 +24,7 @@ use std::io::IoResult;
 
 use util::hash::Sha256dHash;
 use util::uint256::Uint256;
-use network::serialize::{Serializable, VarInt};
+use network::serialize::{Serializable, SerializeIter, VarInt};
 use blockdata::transaction::Transaction;
 #[cfg(test)]
 use serialize::hex::FromHex;

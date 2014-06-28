@@ -46,4 +46,5 @@ extern crate time;
 extern crate bitcoin;
 
 mod bitcoind;
+mod user_data;
 
