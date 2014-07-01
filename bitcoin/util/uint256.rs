@@ -199,14 +199,23 @@ impl PartialEq for Uint256 {
   }
 }
 
+impl Eq for Uint256 {}
+
 impl PartialOrd for Uint256 {
-  fn lt(&self, other: &Uint256) -> bool {
+  fn partial_cmp(&self, other: &Uint256) -> Option<Ordering> {
+    Some(self.cmp(other))
+  }
+}
+
+impl Ord for Uint256 {
+  fn cmp(&self, other: &Uint256) -> Ordering {
     let &Uint256(ref me) = self;
     let &Uint256(ref you) = other;
-    (me[3] < you[3] ||
-    (me[3] == you[3] && (me[2] < you[2] ||
-                        (me[2] == you[2] && (me[1] < you[1] ||
-                                            (me[1] == you[1] && (me[0] < you[0])))))))
+    for i in range(0, 4) {
+      if me[3 - i] < you[3 - i] { return Less; }
+      if me[3 - i] > you[3 - i] { return Greater; }
+    }
+    return Equal;
   }
 }
 
