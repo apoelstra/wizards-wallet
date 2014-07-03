@@ -1,8 +1,0 @@
-
-Required libraries:
-
-  rustsqlite: https://github.com/linuxfood/rustsqlite
-
-  rust-crypto: https://github.com/DaGenix/rust-crypto.git
-
-
