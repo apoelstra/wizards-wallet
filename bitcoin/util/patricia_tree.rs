@@ -43,7 +43,7 @@ impl<T> PatriciaTree<T> {
       data: None,
       child_l: None,
       child_r: None,
-      skip_prefix: Bitv::new(0, false),
+      skip_prefix: Bitv::new(),
     }
   }
 
@@ -96,7 +96,7 @@ impl<T> PatriciaTree<T> {
       // and we can't signal the compiler that we won't use it again.
       let sp_clone = tree.skip_prefix.clone();
       let mut node_key_iter = sp_clone.iter();
-      let mut prefix_key = Bitv::new(0, false);
+      let mut prefix_key = Bitv::new();
       loop {
         match (search_key_iter.next(), node_key_iter.next()) {
           // Node key is exact match to search key --- key already used
