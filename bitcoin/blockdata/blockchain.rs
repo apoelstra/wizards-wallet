@@ -19,7 +19,7 @@
 //!
 
 use alloc::rc::Rc;
-use std::cell::RefCell;
+use std::cell::{Ref, RefCell};
 use std::io::{IoResult, IoError, OtherIoError};
 
 use blockdata::block::BlockHeader;
@@ -42,7 +42,9 @@ struct BlockchainNode {
   /// Height above genesis
   height: u32,
   /// Pointer to block's parent
-  prev: RefCell<Option<Rc<BlockchainNode>>>
+  prev: RefCell<Option<Rc<BlockchainNode>>>,
+  /// Pointer to block's child
+  next: RefCell<Option<Rc<BlockchainNode>>>
 }
 
 impl BlockchainNode {
@@ -56,6 +58,17 @@ impl BlockchainNode {
       Some(prev) => { *cache = Some(prev.clone()); return Some(prev.clone()); }
       None => { return None; }
     }
+  }
+
+  /// Look up the next link
+  fn next<'a>(&'a self) -> Ref<'a, Option<Rc<BlockchainNode>>> {
+    self.next.borrow()
+  }
+
+  /// Set the next link
+  fn set_next(&self, next: Rc<BlockchainNode>) {
+    let mut cache = self.next.borrow_mut();
+    *cache = Some(next);
   }
 }
 
@@ -76,7 +89,8 @@ impl Serializable for Rc<BlockchainNode> {
       total_work: try!(prepend_err("total_work", Serializable::deserialize(iter.by_ref()))),
       required_difficulty: try!(prepend_err("req_difficulty", Serializable::deserialize(iter.by_ref()))),
       height: try!(prepend_err("height", Serializable::deserialize(iter.by_ref()))),
-      prev: RefCell::new(None)
+      prev: RefCell::new(None),
+      next: RefCell::new(None)
     }))
   }
 
@@ -91,7 +105,8 @@ impl Serializable for Rc<BlockchainNode> {
 pub struct Blockchain {
   tree: PatriciaTree<Rc<BlockchainNode>>,
   best_tip: Rc<BlockchainNode>,
-  best_hash: Sha256dHash
+  best_hash: Sha256dHash,
+  genesis_hash: Sha256dHash
 }
 
 impl Serializable for Blockchain {
@@ -99,6 +114,7 @@ impl Serializable for Blockchain {
     let mut ret = vec![];
     ret.extend(self.tree.serialize().move_iter());
     ret.extend(self.best_hash.serialize().move_iter());
+    ret.extend(self.genesis_hash.serialize().move_iter());
     ret
   }
 
@@ -106,7 +122,8 @@ impl Serializable for Blockchain {
     SerializeIter {
       data_iter: None,
       sub_iter_iter: box vec![ &self.tree as &Serializable,
-                               &self.best_hash as &Serializable ].move_iter(),
+                               &self.best_hash as &Serializable,
+                               &self.genesis_hash as &Serializable ].move_iter(),
       sub_iter: None,
       sub_started: false
     }
@@ -114,21 +131,51 @@ impl Serializable for Blockchain {
 
   fn deserialize<I: Iterator<u8>>(mut iter: I) -> IoResult<Blockchain> {
     let tree: PatriciaTree<Rc<BlockchainNode>> = try!(prepend_err("tree", Serializable::deserialize(iter.by_ref())));
-    let hash: Sha256dHash = try!(prepend_err("besthash", Serializable::deserialize(iter.by_ref())));
-    let best = match tree.lookup(&hash.as_bitv()) {
+    let best_hash: Sha256dHash = try!(prepend_err("best_hash", Serializable::deserialize(iter.by_ref())));
+    let genesis_hash: Sha256dHash = try!(prepend_err("genesis_hash", Serializable::deserialize(iter.by_ref())));
+    // Lookup best tip
+    let best = match tree.lookup(&best_hash.as_bitv()) {
       Some(rc) => rc.clone(),
       None => { return Err(IoError {
           kind: OtherIoError,
           desc: "best tip reference not found in tree",
-          detail: Some(format!("best tip {:x} not found", hash))
+          detail: Some(format!("best tip {:x} not found", best_hash))
         });
       }
     };
-    Ok(Blockchain {
-      tree: tree,
-      best_tip: best.clone(),
-      best_hash: best.hash()
-    })
+    // Lookup genesis
+    if tree.lookup(&genesis_hash.as_bitv()).is_none() {
+      return Err(IoError {
+        kind: OtherIoError,
+        desc: "genesis header not found in tree",
+        detail: Some(format!("genesis header {:x} not found", genesis_hash))
+      });
+    }
+    // Reconnect next and prev pointers back to "genesis", the first node
+    // with no prev pointer.
+    let mut scan = best.clone();
+    let mut prev = best.prev(&tree);
+    while prev.is_some() {
+      prev.get_mut_ref().set_next(scan);
+      scan = prev.get_ref().clone();
+      prev = prev.get_ref().prev(&tree);
+    }
+    // Check that "genesis" is the genesis
+    if scan.header.hash() != genesis_hash {
+      Err(IoError {
+          kind: OtherIoError,
+          desc: "best tip did not link back to genesis",
+          detail: Some(format!("no path from tip {:x} to genesis {:x}", best_hash, genesis_hash))
+      })
+    } else {
+      // Return the chain
+      Ok(Blockchain {
+        tree: tree,
+        best_tip: best.clone(),
+        best_hash: best_hash,
+        genesis_hash: genesis_hash
+      })
+    }
   }
 }
 
@@ -155,7 +202,7 @@ impl<'tree> Iterator<Sha256dHash> for LocatorHashIter<'tree> {
     for _ in range(0, self.skip) {
       self.index = match self.index {
         Some(ref rc) => rc.prev(self.tree),
-        None => None
+        None => { break; }
       }
     }
 
@@ -185,22 +232,24 @@ fn satoshi_the_precision(n: &Uint256) -> Uint256 {
 impl Blockchain {
   /// Constructs a new blockchain
   pub fn new(genesis: BlockHeader) -> Blockchain {
-    let genhash = genesis.hash().as_bitv();
+    let genhash = genesis.hash();
     let rc_gen = Rc::new(BlockchainNode {
       header: genesis,
       total_work: Uint256::from_u64(0),
       required_difficulty: genesis.target(),
       height: 0,
-      prev: RefCell::new(None)
+      prev: RefCell::new(None),
+      next: RefCell::new(None)
     });
     Blockchain {
       tree: {
         let mut pat = PatriciaTree::new();
-        pat.insert(&genhash, rc_gen.clone());
+        pat.insert(&genhash.as_bitv(), rc_gen.clone());
         pat
       },
-      best_hash: rc_gen.hash(),
-      best_tip: rc_gen
+      best_hash: genhash,
+      genesis_hash: genhash,
+      best_tip: rc_gen,
     }
   }
 
@@ -237,13 +286,16 @@ impl Blockchain {
              prev.required_difficulty
           };
         // Create node
-        Rc::new(BlockchainNode {
+        let ret = Rc::new(BlockchainNode {
           header: header,
           total_work: header.work().add(&prev.total_work),
           required_difficulty: difficulty,
           height: prev.height + 1,
-          prev: RefCell::new(Some(prev.clone()))
-        })
+          prev: RefCell::new(Some(prev.clone())),
+          next: RefCell::new(None)
+        });
+        prev.set_next(ret.clone());
+        ret
       },
       None => {
         println!("TODO: couldn't add blockheader");
@@ -267,8 +319,33 @@ impl Blockchain {
 
   /// Sets the best tip (not public)
   fn set_best_tip(&mut self, tip: Rc<BlockchainNode>) {
+    let old_best = self.best_tip.clone();
+    // Set best
     self.best_hash = tip.hash();
     self.best_tip = tip;
+    // Fix next links
+    let mut scan = self.best_tip.clone();
+    let mut prev = self.best_tip.prev(&self.tree);
+    // Scan backward
+    loop {
+      // If we hit the old best, there is no need to reorg
+      if scan.header == old_best.header {
+        break;
+      }
+      // If we hit the genesis, stop
+      if prev.is_none() {
+        println!("Warning: reorg past the genesis. This is a bug.");
+        break;
+      }
+      // If we hit something pointing along the wrong chain, this is
+      // a branch point at which we are reorg'ing
+      if prev.get_ref().next().is_none() ||
+         prev.get_ref().next().get_ref().header != scan.header {
+        prev.get_mut_ref().set_next(scan);
+      }
+      scan = prev.clone().unwrap();
+      prev = prev.unwrap().prev(&self.tree);
+    }
   }
 
   /// Returns the best tip
