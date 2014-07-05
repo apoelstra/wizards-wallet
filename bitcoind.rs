@@ -15,7 +15,6 @@
 use std::io::{IoError, IoResult, IoUnavailable};
 use std::comm::Select;
 
-use bitcoin::blockdata::block::BlockHeader;
 use bitcoin::blockdata::blockchain::Blockchain;
 use bitcoin::blockdata::constants::genesis_block;
 use bitcoin::network::serialize::Serializable;
@@ -23,7 +22,7 @@ use bitcoin::network::listener::{Listener, ListenerChannels};
 use bitcoin::network::socket::Socket;
 use bitcoin::network::message_blockdata::{GetDataMessage, GetHeadersMessage};
 use bitcoin::util::misc::consume_err;
-use bitcoin::util::hash::zero_hash;
+use bitcoin::util::hash::{Sha256dHash, zero_hash};
 
 use user_data;
 
@@ -33,7 +32,7 @@ pub struct Bitcoind {
   blockchain: Blockchain,
   channels: Option<ListenerChannels>,
   sock: Option<Socket>,
-  last_best_tip: Option<BlockHeader>
+  last_best_tip: Option<Sha256dHash>
 }
 
 impl Bitcoind {
@@ -49,7 +48,7 @@ println!("Read blockchain, best tip {:x}", blockchain.best_tip().hash());
   blockchain },
         Err(e) => {
           println!("Failed to load blockchain: {:}, starting from genesis.", e);
-          Blockchain::new(genesis_block().header)
+          Blockchain::new(genesis_block())
         }
       },
       channels: None,
@@ -115,9 +114,9 @@ println!("Read blockchain, best tip {:x}", blockchain.best_tip().hash());
           }
           // None is code for `end of headers message`
           None => {
-            let new_best_tip = self.blockchain.best_tip();
+            let new_best_tip = self.blockchain.best_tip().hash();
             if self.last_best_tip.is_none() ||
-               self.last_best_tip.get_ref() != self.blockchain.best_tip() {
+               self.last_best_tip.get_ref() != &new_best_tip {
               consume_err("Warning: failed to send headers message",
                 self.sock.get_mut_ref().send_message(&GetHeadersMessage::new(self.blockchain.locator_hashes(), zero_hash())));
             } else {
@@ -127,7 +126,7 @@ println!("Read blockchain, best tip {:x}", blockchain.best_tip().hash());
                 Err(e) => { println!("failed to write blockchain: {:}", e); }
               }
             }
-            self.last_best_tip = Some(*new_best_tip.clone());
+            self.last_best_tip = Some(new_best_tip);
           }
         }
       } else if id == inv_h.id() {
@@ -155,15 +154,16 @@ impl Listener for Bitcoind {
 mod tests {
   use bitcoin::network::listener::Listener;
 
+  use user_data::blockchain_path;
   use bitcoind::Bitcoind;
 
   #[test]
   fn test_bitcoind() {
-    let bitcoind = Bitcoind::new("localhost", 1000);
+    let bitcoind = Bitcoind::new("localhost", 1000, &blockchain_path());
     assert_eq!(bitcoind.peer(), "localhost");
     assert_eq!(bitcoind.port(), 1000);
 
-    let mut bitcoind = Bitcoind::new("127.0.0.1", 0);
+    let mut bitcoind = Bitcoind::new("localhost", 0, &blockchain_path());
     assert!(bitcoind.listen().is_err());
   }
 }

@@ -437,14 +437,14 @@ mod tests {
     // Do the actual test -- note that we also test insertion and deletion
     // at the root here.
     for i in range(0u32, 10) {
-      tree.insert(&Bitv::new(i as uint, true), i);
+      tree.insert(&Bitv::with_capacity(i as uint, true), i);
     }
     for i in range(0u32, 10) {
-      let m = tree.lookup(&Bitv::new(i as uint, true));
+      let m = tree.lookup(&Bitv::with_capacity(i as uint, true));
       assert_eq!(m, Some(&i));
     }
     for i in range(0u32, 10) {
-      let m = tree.delete(&Bitv::new(i as uint, true));
+      let m = tree.delete(&Bitv::with_capacity(i as uint, true));
       assert_eq!(m, Some(i));
     }
     // Check that the chunder was unharmed

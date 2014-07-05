@@ -630,7 +630,7 @@ fn serialize_option_test() {
 
 #[test]
 fn serialize_bitv_test() {
-  let bv = Bitv::new(10, true);
+  let bv = Bitv::with_capacity(10, true);
   assert_eq!(bv.serialize(), vec![10, 0xFF, 0xC0]);
   assert_eq!(bv.serialize(), bv.serialize_iter().collect());
 }
@@ -727,6 +727,6 @@ fn deserialize_box_test() {
 fn deserialize_bitv_test() {
   let bv: IoResult<Bitv> = Serializable::deserialize([10u8, 0xFF, 0xC0].iter().map(|n| *n));
   assert!(bv.is_ok());
-  assert_eq!(bv.unwrap(), Bitv::new(10, true));
+  assert_eq!(bv.unwrap(), Bitv::with_capacity(10, true));
 }
 
