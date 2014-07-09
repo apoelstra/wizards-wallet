@@ -47,9 +47,18 @@ impl<T> PatriciaTree<T> {
     }
   }
 
-  /// Lookup a value by exactly matching `key`
+  /// Lookup a value by exactly matching `key` and return a referenc
   pub fn lookup<'a>(&'a self, key: &Bitv) -> Option<&'a T> {
-    fn recurse<'a, T, I: Iterator<bool>>(tree: &'a PatriciaTree<T>, mut search_key_iter: I) -> Option<&'a T> {
+    // Caution: `lookup_mut` never modifies its self parameter (in fact its
+    // internal recursion uses a non-mutable self, so we are OK to just
+    // transmute our self pointer into a mutable self before passing it in.
+    use std::mem::transmute;
+    unsafe { transmute::<&PatriciaTree<T>, &mut PatriciaTree<T>>(self).lookup_mut(key).map(|m| &*m) }
+  }
+
+  /// Lookup a value by exactly matching `key` and return a mutable reference
+  pub fn lookup_mut<'a>(&'a mut self, key: &Bitv) -> Option<&'a mut T> {
+    fn recurse<'a, T, I: Iterator<bool>>(tree: &'a PatriciaTree<T>, mut search_key_iter: I) -> Option<&'a mut T> {
       let mut node_key_iter = tree.skip_prefix.iter();
       loop {
         match (search_key_iter.next(), node_key_iter.next()) {
@@ -57,7 +66,15 @@ impl<T> PatriciaTree<T> {
           (None, None) => {
             return match tree.data {
               Some(ref bx) => {
-                let borrow = &*bx;
+                // We took a mutable self to make sure the tree is mutably
+                // borrowed, but during the recursion we do not use any mutable
+                // pointers, for safety's sake. The returned reference has to
+                // be mutable, however, so we use transmute. This is safe since
+                // the tree does not know or care what the returned reference
+                // points to, and the reference can't contain references to the
+                // tree itself.
+                use std::mem::transmute;
+                let borrow = unsafe { transmute(&*bx) };
                 Some(borrow)
               },
               _ => None
@@ -460,7 +477,7 @@ mod tests {
     // Build a tree
     let mut tree = PatriciaTree::new();
     let mut hashes = vec![];
-    for i in range(0u32, 2) {
+    for i in range(0u32, 5000) {
       let hash = Sha256dHash::from_data(&[(i / 0x100) as u8, (i % 0x100) as u8]).as_bitv();
       tree.insert(&hash, i);
       hashes.push(hash);

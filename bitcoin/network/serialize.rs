@@ -615,7 +615,6 @@ fn serialize_box_test() {
   assert_eq!((box 1u64).serialize(), vec![1u8, 0, 0, 0, 0, 0, 0, 0]);
 }
 
-
 #[test]
 fn serialize_option_test() {
   let none: Option<u8> = None;

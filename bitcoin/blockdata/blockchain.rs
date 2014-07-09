@@ -23,6 +23,7 @@ use std::cell::{Ref, RefCell};
 use std::io::{IoResult, IoError, OtherIoError};
 
 use blockdata::block::{Block, BlockHeader};
+use blockdata::transaction::Transaction;
 use blockdata::constants::{DIFFCHANGE_INTERVAL, DIFFCHANGE_TIMESPAN, max_target};
 use network::serialize::{Serializable, SerializeIter};
 use util::uint256::Uint256;
@@ -276,6 +277,37 @@ impl Blockchain {
     }
   }
 
+  /// Locates a block in the chain and overwrites its txdata
+  pub fn add_txdata(&mut self, block: Block) -> bool {
+    match self.tree.lookup_mut(&block.header.hash().as_bitv()) {
+      Some(existing_block) => {
+        unsafe {
+          // existing_block is an Rc. Rust will not let us mutate it under
+          // any circumstances, since if it were to be reallocated, then
+          // all other references to it would be destroyed. However, we
+          // just need a mutable pointer to the txdata vector; by calling
+          // Vec::clone_from() rather than assigning, we can be assured that
+          // no reallocation can occur, since clone_from() takes an &mut self,
+          // which it does not own and therefore cannot move.
+          //
+          // To be clear: there will undoubtedly be some reallocation within
+          // the Vec itself. We don't care about this. What we care about is
+          // that the Vec (and more pointedly, its containing struct) does not
+          // move, since this would invalidate the Rc that we are snookering.
+          use std::mem::{forget, transmute};
+          let mutable_vec = transmute::<&Vec<Transaction>, &mut Vec<Transaction>>(&existing_block.block.txdata);
+          mutable_vec.clone_from(&block.txdata);
+          // If mutable_vec went out of scope unhindered, it would deallocate
+          // the Vec it points to, since Rust assumes that a mutable vector
+          // is a unique reference (and this one is definitely not).
+          forget(mutable_vec);
+        }
+        return true
+      },
+      None => return false
+    }
+  }
+
   /// Adds a block header to the chain
   pub fn add_header(&mut self, header: BlockHeader) -> bool {
     self.add_block(Block { header: header, txdata: vec![] })
@@ -283,8 +315,13 @@ impl Blockchain {
 
   /// Adds a block to the chain
   pub fn add_block(&mut self, block: Block) -> bool {
+    // get_prev optimizes the common case where we are extending the best tip
+    fn get_prev<'a>(chain: &'a Blockchain, hash: Sha256dHash) -> Option<&'a Rc<BlockchainNode>> {
+      if hash == chain.best_hash { return Some(&chain.best_tip); }
+      chain.tree.lookup(&hash.as_bitv())
+    }
     // Construct node, if possible
-    let rc_block = match self.tree.lookup(&block.header.prev_blockhash.as_bitv()) {
+    let rc_block = match get_prev(self, block.header.prev_blockhash) {
       Some(prev) => {
         let difficulty =
           // Compute required difficulty if this is a diffchange block

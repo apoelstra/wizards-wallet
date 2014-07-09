@@ -12,129 +12,151 @@
  * If not, see <http://creativecommons.org/publicdomain/zero/1.0/>.
  */
 
-use std::io::{IoError, IoResult, IoUnavailable};
-use std::comm::Select;
+use std::io::IoResult;
+use std::path::posix::Path;
 
 use bitcoin::blockdata::blockchain::Blockchain;
 use bitcoin::blockdata::constants::genesis_block;
+use bitcoin::blockdata::utxoset::UtxoSet;
 use bitcoin::network::serialize::Serializable;
-use bitcoin::network::listener::{Listener, ListenerChannels};
+use bitcoin::network::listener::{Listener, ListenerChannels, RecvBlock, RecvHeader, RecvInv};
 use bitcoin::network::socket::Socket;
 use bitcoin::network::message_blockdata::{GetDataMessage, GetHeadersMessage};
 use bitcoin::util::misc::consume_err;
 use bitcoin::util::hash::{Sha256dHash, zero_hash};
 
-use user_data;
+struct IdleState {
+  sock: Socket,
+  chan: Box<ListenerChannels>,
+  blockchain: Blockchain,
+}
+
+enum StartupState {
+  Init,
+  LoadFromDisk(Socket, Box<ListenerChannels>),
+  SyncBlockchain(Socket, Box<ListenerChannels>, Blockchain, Sha256dHash),
+//  SyncUtxoSet(uint),            // height
+  SaveBlockchain(Box<StartupState>), // next state
+  Idle(IdleState)
+}
 
 pub struct Bitcoind {
   peer_address: String,
   peer_port: u16,
-  blockchain: Blockchain,
-  channels: Option<ListenerChannels>,
-  sock: Option<Socket>,
-  last_best_tip: Option<Sha256dHash>
+  blockchain_path: Path
 }
 
 impl Bitcoind {
-  pub fn new(peer_address: &str, peer_port: u16, blockchain_path: &Path) -> Bitcoind {
+  pub fn new(peer_address: &str, peer_port: u16, blockchain_path: Path) -> Bitcoind {
     Bitcoind {
       peer_address: String::from_str(peer_address),
       peer_port: peer_port,
-      // Load blockchain from disk
-      blockchain: match Serializable::deserialize_file(blockchain_path) {
-        Ok(blockchain) => {
-  let blockchain: Blockchain = blockchain;
-println!("Read blockchain, best tip {:x}", blockchain.best_tip().hash());
-  blockchain },
-        Err(e) => {
-          println!("Failed to load blockchain: {:}, starting from genesis.", e);
-          Blockchain::new(genesis_block())
-        }
-      },
-      channels: None,
-      sock: None,
-      last_best_tip: None
+      blockchain_path: blockchain_path
     }
   }
 
-  /// Sends a `getheaders` message; the `headers` handler will do the rest
-  pub fn sync_blockchain(&mut self) -> IoResult<()> {
-    println!("Starting sync.");
-    match self.sock {
-      Some(ref mut sock) => {
-        try!(sock.send_message(&GetHeadersMessage::new(self.blockchain.locator_hashes(), zero_hash())));
-        Ok(())
-      },
-      None => Err(IoError {
-        kind: IoUnavailable,
-        desc: "cannot sync channel -- nowhere to send messages",
-        detail: None
-      }),
-    }
-  }
-
+  /// Run the state machine
   pub fn listen(&mut self) -> IoResult<()> {
-    // Open socket
-    let (ch, sk) = try!(self.start());
-    self.channels = Some(ch);
-    self.sock = Some(sk);
-    // Sync with chain
-    try!(self.sync_blockchain());
-    // Listen for messages
-    // note that this is a manual unwrapping of the select! macro in std/macros.rs
-    // See #12902 https://github.com/rust-lang/rust/issues/12902 for why this is necessary.
-    let sel = Select::new();
-    let block_ref = &self.channels.get_ref().block_rx;
-    let mut block_h = sel.handle(block_ref);
-    let header_ref = &self.channels.get_ref().header_rx;
-    let mut header_h = sel.handle(header_ref);
-    let inv_ref = &self.channels.get_ref().inv_rx;
-    let mut inv_h = sel.handle(inv_ref);
-    unsafe {
-      block_h.add();
-      header_h.add();
-      inv_h.add();
-    }
-    // This loop never returns
+    let mut state = Init;
+    // Eternal state machine loop
     loop {
-      let id = sel.wait();
-      if id == block_h.id() {
-        let block = block_h.recv();
-        println!("Received block: {:x}", block.header.hash());
-        if !self.blockchain.add_header(block.header) {
-          println!("failed to add block {:x} to chain", block.header.hash());
+      state = match state {
+        // First startup
+        Init => {
+          // Open socket
+          let (channels, sock) = try!(self.start());
+          LoadFromDisk(sock, channels)
         }
-      } else if id == header_h.id() {
-        let header_opt = header_h.recv();
-        match header_opt {
-          Some(header) => {
-            if !self.blockchain.add_header(*header) {
-              println!("failed to add block {:x} to chain", header.hash());
+        // Load cached blockchain and utxoset from disk
+        LoadFromDisk(sock, channels) => {
+          println!("Loading blockchain...");
+          // Load blockchain from disk
+          let blockchain = match Serializable::deserialize_file(&self.blockchain_path) {
+            Ok(blockchain) => blockchain,
+            Err(e) => {
+              println!("Failed to load blockchain: {:}, starting from genesis.", e);
+              Blockchain::new(genesis_block())
+            }
+          };
+          let best_tip_hash = blockchain.best_tip().header.hash();
+          SyncBlockchain(sock, channels, blockchain, best_tip_hash)
+        },
+        // Synchronize the blockchain with the peer
+        SyncBlockchain(mut sock, channels, mut blockchain, last_best_tip_hash) => {
+          println!("Headers sync: last best tip {}", last_best_tip_hash);
+          // Request headers
+          consume_err("Headers sync: failed to send `headers` message",
+            sock.send_message(&GetHeadersMessage::new(blockchain.locator_hashes(), zero_hash())));
+          // Loop through received headers
+          loop {
+            match channels.header_rx.recv() {
+              // Each `headers` message is passed to us as a None-terminated list of headers
+              None => break,
+              Some(header) => {
+                if !blockchain.add_header(*header) {
+                  println!("Headers sync: failed to add {} to chain", header.hash());
+                }
+              }
             }
           }
-          // None is code for `end of headers message`
-          None => {
-            let new_best_tip = self.blockchain.best_tip().hash();
-            if self.last_best_tip.is_none() ||
-               self.last_best_tip.get_ref() != &new_best_tip {
-              consume_err("Warning: failed to send headers message",
-                self.sock.get_mut_ref().send_message(&GetHeadersMessage::new(self.blockchain.locator_hashes(), zero_hash())));
-            } else {
-              println!("Done sync.");
-              match self.blockchain.serialize_file(&user_data::blockchain_path()) {
+          // Check if we are done sync'ing
+          let new_best_tip_hash = blockchain.best_tip().header.hash();
+          if new_best_tip_hash != last_best_tip_hash {
+            SyncBlockchain(sock, channels, blockchain, new_best_tip_hash)
+          } else {
+            println!("Done sync.");
+            Idle(IdleState {
+              sock: sock,
+              chan: channels,
+              blockchain: blockchain
+            })
+          }
+        },
+        // Idle loop
+        Idle(mut idle_state) => {
+          println!("Idling...");
+          match idle_state.chan.recv() {
+            RecvBlock(block) => {
+              println!("Received block: {:x}", block.header.hash());
+              if !idle_state.blockchain.add_header(block.header) {
+                println!("failed to add block {:x} to chain", block.header.hash());
+              }
+            },
+            RecvHeader(header_opt) => {
+              match header_opt {
+                Some(header) => {
+                  if !idle_state.blockchain.add_header(*header) {
+                    println!("failed to add block {:x} to chain", header.hash());
+                  }
+                }
+                None => {}
+              }
+            },
+            RecvInv(inv) => {
+              let sendmsg = GetDataMessage(inv);
+              // Send
+              consume_err("Warning: failed to send getdata in response to inv",
+                idle_state.sock.send_message(&sendmsg));
+            }
+          }
+          Idle(idle_state)
+        }
+        // Temporary states
+        SaveBlockchain(box next_state) => {
+          match next_state {
+            Idle(ref idle_state) => {
+              println!("Saving blockchain...");
+              match idle_state.blockchain.serialize_file(&self.blockchain_path) {
                 Ok(()) => { println!("Successfully saved blockchain.") },
                 Err(e) => { println!("failed to write blockchain: {:}", e); }
               }
+            },
+            _ => {
+              println!("Warn: tried to save blockchain in non-idle state. Refusing.");
             }
-            self.last_best_tip = Some(new_best_tip);
           }
+          next_state
         }
-      } else if id == inv_h.id() {
-        let data = inv_h.recv();
-        let sendmsg = GetDataMessage(data);
-        // Send
-        consume_err("Warning: failed to send getdata in response to inv",
-          self.sock.get_mut_ref().send_message(&sendmsg));
       }
     }
   }

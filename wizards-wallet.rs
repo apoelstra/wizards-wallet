@@ -24,7 +24,7 @@
 //!
 
 
-#![crate_id = "wizards-wallet#0.1-pre"]
+#![crate_name = "wizards-wallet"]
 
 #![comment = "The Wizards' Wallet"]
 #![license = "CC0"]
@@ -59,7 +59,7 @@ fn main()
   println!("Starting the Wizards' Wallet");
 
   // Connect to bitcoind
-  let mut bitcoind = Bitcoind::new("127.0.0.1", 8333, &blockchain_path());
+  let mut bitcoind = Bitcoind::new("127.0.0.1", 8333, blockchain_path());
   // Loop until we get a successful connection
   loop {
     match bitcoind.listen() {

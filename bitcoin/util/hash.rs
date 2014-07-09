@@ -18,7 +18,7 @@
 use collections::bitv::{Bitv, from_bytes};
 use core::char::from_digit;
 use core::cmp::min;
-use std::fmt::{LowerHex, Formatter, Result};
+use std::fmt;
 use std::io::{IoResult, IoError, InvalidInput};
 use std::mem::transmute;
 
@@ -108,8 +108,8 @@ impl Serializable for Sha256dHash {
   }
 }
 
-impl LowerHex for Sha256dHash {
-  fn fmt(&self, f: &mut Formatter) -> Result {
+impl fmt::LowerHex for Sha256dHash {
+  fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
     let &Sha256dHash(ref data) = self;
     let mut rv = [0, ..64];
     let mut hex = data.iter().rev().map(|n| *n).enumerate();
@@ -118,6 +118,12 @@ impl LowerHex for Sha256dHash {
       rv[2*i + 1] = from_digit(ch as uint % 16, 16).unwrap() as u8;
     }
     f.write(rv.as_slice())
+  }
+}
+
+impl fmt::Show for Sha256dHash {
+  fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    write!(f, "{:x}", *self)
   }
 }
 

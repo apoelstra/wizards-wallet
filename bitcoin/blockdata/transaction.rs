@@ -31,6 +31,7 @@ use blockdata::script::Script;
 use util::misc::hex_bytes;
 
 /// A transaction input, which defines old coins to be consumed
+#[deriving(Clone, PartialEq, Show)]
 pub struct TxIn {
   /// The hash of the transaction whose output is being used an an input
   pub prev_hash: Sha256dHash,
@@ -47,6 +48,7 @@ pub struct TxIn {
 }
 
 /// A transaction output, which defines new coins to be created from old ones.
+#[deriving(Clone, PartialEq, Show)]
 pub struct TxOut {
   /// The value of the output, in satoshis
   pub value: u64,
@@ -55,6 +57,7 @@ pub struct TxOut {
 }
 
 /// A Bitcoin transaction, which describes an authenticated movement of coins
+#[deriving(Clone, PartialEq, Show)]
 pub struct Transaction {
   /// The protocol version, should always be 1.
   pub version: u32,

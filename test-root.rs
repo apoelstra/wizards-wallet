@@ -24,7 +24,7 @@
 //!
 
 
-#![crate_id = "wizards-wallet#0.1-pre"]
+#![crate_name = "wizards-wallet-test"]
 
 #![comment = "The Wizards' Wallet Test Root"]
 #![license = "CC0"]
