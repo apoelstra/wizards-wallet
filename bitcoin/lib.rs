@@ -23,13 +23,15 @@
 //! software.
 //!
 
-#![crate_id = "bitcoin#0.1-pre"]
+#![crate_name = "bitcoin"]
 #![crate_type = "dylib"]
 #![crate_type = "rlib"]
 
 // Experimental features we need
 #![feature(globs)]
 #![feature(macro_rules)]
+#![feature(overloaded_calls)]
+#![feature(unsafe_destructor)]
 
 #![comment = "Rust Bitcoin Library"]
 #![license = "CC0"]
@@ -47,13 +49,17 @@ extern crate collections;
 extern crate core;
 extern crate num;
 extern crate rand;
+extern crate rustrt;
 extern crate serialize;
+extern crate sync;
 extern crate time;
 
 extern crate crypto = "rust-crypto";
 
-mod macros;
+mod internal_macros;
+pub mod macros;
 pub mod network;
 pub mod blockdata;
 pub mod util;
+
 

@@ -9,7 +9,7 @@ bitcoin-rust: bitcoin/*.rs bitcoin/*/*.rs
 bitcoin-docs: bitcoin/*.rs bitcoin/*/*.rs
 	rustdoc bitcoin/lib.rs
 
-wizards-wallet: *.rs libbitcoin-c7b18f3c-0.1-pre.rlib
+wizards-wallet: *.rs libbitcoin.rlib
 	rustc --opt-level=3 -L . wizards-wallet.rs
 
 check: *.rs libbitcoin-c7b18f3c-0.1-pre.rlib bitcoin/*.rs bitcoin/*/*.rs

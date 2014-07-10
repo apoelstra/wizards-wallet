@@ -31,6 +31,7 @@
 
 // Experimental features we need
 #![feature(globs)]
+#![feature(phase)]
 
 // Coding conventions
 #![deny(non_uppercase_pattern_statics)]
@@ -41,9 +42,11 @@
 #![warn(missing_doc)]
 
 extern crate rand;
+extern crate rustrt;
+extern crate sync;
 extern crate time;
 
-extern crate bitcoin;
+#[phase(plugin,link)] extern crate bitcoin;
 
 use std::io::timer;
 

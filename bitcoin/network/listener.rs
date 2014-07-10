@@ -20,7 +20,6 @@
 
 use std::io::{IoResult, standard_error, ConnectionFailed};
 use std::io::timer;
-use sync::comm::{Handle, Select};
 
 use blockdata::block::{Block, BlockHeader};
 use network::serialize::{Serializable, Message};
@@ -29,58 +28,14 @@ use network::message_blockdata::{InventoryMessage, Inventory, HeadersMessage};
 use network::socket::Socket;
 use network::constants;
 
-// Everything ListenerChannels-related is a huge mess, waiting on
-// #12902 with a sane interface
-struct PrivListenerChannels {
-  sel: Select,
-  block_rxh: Handle<'static, Box<Block>>,
-  header_rxh: Handle<'static, Option<Box<BlockHeader>>>,
-  inv_rxh: Handle<'static, Vec<Inventory>>,
-}
-
-#[unsafe_destructor]
-impl Drop for PrivListenerChannels {
-  // We have to do this before self.sel is dropped
-  fn drop(&mut self) {
-    unsafe {
-      self.block_rxh.remove();
-      self.header_rxh.remove();
-      self.inv_rxh.remove();
-    }
-  }
-}
-
 /// Container for communication channels with the listening thread
-pub struct ListenerChannels {
-  priv_lc: Box<PrivListenerChannels>,
+pub struct ListenerChannels<'a> {
   /// Receiver for new blocks received by peer
   pub block_rx: Receiver<Box<Block>>,
   /// Receiver for new blockheaders received by peer
   pub header_rx: Receiver<Option<Box<BlockHeader>>>,
   /// Receiver for new inv messages received by peer
   pub inv_rx: Receiver<Vec<Inventory>>
-}
-
-pub enum RecvMessages {
-  RecvBlock(Box<Block>),
-  RecvHeader(Option<Box<BlockHeader>>),
-  RecvInv(Vec<Inventory>),
-}
-
-impl ListenerChannels {
-  pub fn recv(&mut self) -> RecvMessages {
-    let id = self.priv_lc.sel.wait();
-    if id == self.priv_lc.block_rxh.id() {
-      RecvBlock(self.priv_lc.block_rxh.recv())
-    }
-    else if id == self.priv_lc.header_rxh.id() {
-      RecvHeader(self.priv_lc.header_rxh.recv())
-    }
-    else if id == self.priv_lc.inv_rxh.id() {
-      RecvInv(self.priv_lc.inv_rxh.recv())
-    }
-    else { fail!("Bug 153055"); }
-  }
 }
 
 /// A message which can be sent on the Bitcoin network
@@ -90,7 +45,7 @@ pub trait Listener {
   /// Return the port we have connected to the peer on
   fn port(&self) -> u16;
   /// Main listen loop
-  fn start(&self) -> IoResult<(Box<ListenerChannels>, Socket)> {
+  fn start(&self) -> IoResult<(ListenerChannels, Socket)> {
     // Open socket
     let mut ret_sock = Socket::new(constants::MAGIC_BITCOIN);
     match ret_sock.connect(self.peer(), self.port()) {
@@ -208,41 +163,12 @@ pub trait Listener {
       }
     });
     // Set up ListenerChannels
-    let mut ret_channels = box ListenerChannels { 
-      // Set `sel` into place, but leave the handles uninitialized since
-      // they depend on `sel` not moving once they are set.
-      priv_lc: unsafe { 
-        use std::mem::uninitialized;
-        box PrivListenerChannels {
-          sel: Select::new(),
-          block_rxh: uninitialized(),
-          header_rxh: uninitialized(),
-          inv_rxh: uninitialized()
-        }
-      },
+    let ret_channels = ListenerChannels { 
       block_rx: block_rx,
       header_rx: header_rx,
       inv_rx: inv_rx
     };
-    // Set handles in place
-    unsafe {
-      use std::mem::transmute;
-      // Cast everything to static. Fuck borrowck.
-      let stat_sel: &'static Select = transmute(&ret_channels.priv_lc.sel);
-      let stat_block_rx: &'static Receiver<Box<Block>> = transmute(&ret_channels.block_rx);
-      let stat_header_rx: &'static Receiver<Option<Box<BlockHeader>>> = transmute(&ret_channels.header_rx);
-      let stat_inv_rx: &'static Receiver<Vec<Inventory>> = transmute(&ret_channels.inv_rx);
-      ret_channels.priv_lc.block_rxh = stat_sel.handle(stat_block_rx);
-      ret_channels.priv_lc.header_rxh = stat_sel.handle(stat_header_rx);
-      ret_channels.priv_lc.inv_rxh = stat_sel.handle(stat_inv_rx);
-      ret_channels.priv_lc.block_rxh.add();
-      ret_channels.priv_lc.header_rxh.add();
-      ret_channels.priv_lc.inv_rxh.add();
-    }
-
     Ok((ret_channels, ret_sock))
   }
 }
-
-
 

@@ -19,25 +19,25 @@ use bitcoin::blockdata::blockchain::Blockchain;
 use bitcoin::blockdata::constants::genesis_block;
 use bitcoin::blockdata::utxoset::UtxoSet;
 use bitcoin::network::serialize::Serializable;
-use bitcoin::network::listener::{Listener, ListenerChannels, RecvBlock, RecvHeader, RecvInv};
+use bitcoin::network::listener::{Listener, ListenerChannels};
 use bitcoin::network::socket::Socket;
 use bitcoin::network::message_blockdata::{GetDataMessage, GetHeadersMessage};
 use bitcoin::util::misc::consume_err;
 use bitcoin::util::hash::{Sha256dHash, zero_hash};
 
-struct IdleState {
+struct IdleState<'a> {
   sock: Socket,
-  chan: Box<ListenerChannels>,
+  chan: ListenerChannels<'a>,
   blockchain: Blockchain,
 }
 
-enum StartupState {
+enum StartupState<'a> {
   Init,
-  LoadFromDisk(Socket, Box<ListenerChannels>),
-  SyncBlockchain(Socket, Box<ListenerChannels>, Blockchain, Sha256dHash),
+  LoadFromDisk(Socket, ListenerChannels<'a>),
+  SyncBlockchain(Socket, ListenerChannels<'a>, Blockchain, Sha256dHash),
 //  SyncUtxoSet(uint),            // height
-  SaveBlockchain(Box<StartupState>), // next state
-  Idle(IdleState)
+  SaveBlockchain(Box<StartupState<'a>>), // next state
+  Idle(IdleState<'a>)
 }
 
 pub struct Bitcoind {
@@ -105,24 +105,25 @@ impl Bitcoind {
             SyncBlockchain(sock, channels, blockchain, new_best_tip_hash)
           } else {
             println!("Done sync.");
-            Idle(IdleState {
+            SaveBlockchain(box Idle(IdleState {
               sock: sock,
               chan: channels,
               blockchain: blockchain
-            })
+            }))
           }
         },
         // Idle loop
         Idle(mut idle_state) => {
           println!("Idling...");
-          match idle_state.chan.recv() {
-            RecvBlock(block) => {
+          nu_select!{
+            block from idle_state.chan.block_rx => {
               println!("Received block: {:x}", block.header.hash());
               if !idle_state.blockchain.add_header(block.header) {
                 println!("failed to add block {:x} to chain", block.header.hash());
               }
             },
-            RecvHeader(header_opt) => {
+            header_opt from idle_state.chan.header_rx => {
+              println!("Received header: {}", header_opt.as_ref().map(|h| h.hash()));
               match header_opt {
                 Some(header) => {
                   if !idle_state.blockchain.add_header(*header) {
@@ -132,7 +133,8 @@ impl Bitcoind {
                 None => {}
               }
             },
-            RecvInv(inv) => {
+            inv from idle_state.chan.inv_rx => {
+              println!("Received inv.");
               let sendmsg = GetDataMessage(inv);
               // Send
               consume_err("Warning: failed to send getdata in response to inv",
