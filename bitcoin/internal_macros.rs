@@ -42,34 +42,3 @@ macro_rules! impl_serializable(
   );
 )
 
-macro_rules! impl_serializable_newtype(
-  ($thing:ident, $parent:ty) => (
-    impl Serializable for $thing {
-      fn serialize(&self) -> Vec<u8> {
-        let &$thing(ref data) = self;
-        data.serialize()
-      }
-
-      fn deserialize<I: Iterator<u8>>(iter: I) -> IoResult<$thing> {
-        let raw = Serializable::deserialize(iter);
-        raw.map(|ok| $thing(ok))
-      }
-    }
-  );
-)
-
-macro_rules! impl_message(
-  ($thing:ident, $name:expr) => (
-    impl $thing {
-      /// Returns a human-readable description of the message
-      fn command() -> String { String::from_str($name) }
-    }
-
-    impl Message for $thing {
-      fn command(&self) -> String {
-        $thing::command()
-      }
-    }
-  );
-)
-

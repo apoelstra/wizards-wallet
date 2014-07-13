@@ -17,8 +17,13 @@
 //! This module provides the structures and functions to maintain the
 //! blockchain.
 //!
+//! Note to developers: do not expose any ref-counted pointers in the public
+//! API of this module. Internally we do unsafe mutations of them and we need
+//! to make sure we are holding the only references.
+//!
 
 use alloc::rc::Rc;
+use collections::bitv::Bitv;
 use std::cell::{Ref, RefCell};
 use std::io::{IoResult, IoError, OtherIoError};
 
@@ -32,16 +37,18 @@ use util::misc::prepend_err;
 use util::patricia_tree::PatriciaTree;
 
 /// A link in the blockchain
-struct BlockchainNode {
+pub struct BlockchainNode {
   /// The actual block
-  block: Block,
+  pub block: Block,
   /// Total work from genesis to this point
-  total_work: Uint256,
+  pub total_work: Uint256,
   /// Expected value of `block.header.bits` for this block; only changes every
   /// `blockdata::constants::DIFFCHANGE_INTERVAL;` blocks
-  required_difficulty: Uint256,
+  pub required_difficulty: Uint256,
   /// Height above genesis
-  height: u32,
+  pub height: u32,
+  /// Whether the transaction data is stored
+  pub has_txdata: bool,
   /// Pointer to block's parent
   prev: RefCell<Option<Rc<BlockchainNode>>>,
   /// Pointer to block's child
@@ -80,6 +87,7 @@ impl Serializable for Rc<BlockchainNode> {
     ret.extend(self.total_work.serialize().move_iter());
     ret.extend(self.required_difficulty.serialize().move_iter());
     ret.extend(self.height.serialize().move_iter());
+    ret.extend(self.has_txdata.serialize().move_iter());
     // Don't serialize the prev pointer
     ret
   }
@@ -90,6 +98,7 @@ impl Serializable for Rc<BlockchainNode> {
       total_work: try!(prepend_err("total_work", Serializable::deserialize(iter.by_ref()))),
       required_difficulty: try!(prepend_err("req_difficulty", Serializable::deserialize(iter.by_ref()))),
       height: try!(prepend_err("height", Serializable::deserialize(iter.by_ref()))),
+      has_txdata: try!(prepend_err("has_txdata", Serializable::deserialize(iter.by_ref()))),
       prev: RefCell::new(None),
       next: RefCell::new(None)
     }))
@@ -220,8 +229,8 @@ pub struct BlockIter<'tree> {
   index: Option<Rc<BlockchainNode>>
 }
 
-impl<'tree> Iterator<&'tree Block> for BlockIter<'tree> {
-  fn next(&mut self) -> Option<&'tree Block> {
+impl<'tree> Iterator<&'tree BlockchainNode> for BlockIter<'tree> {
+  fn next(&mut self) -> Option<&'tree BlockchainNode> {
     match self.index.clone() {
       Some(rc) => {
         use core::mem::transmute;
@@ -229,8 +238,8 @@ impl<'tree> Iterator<&'tree Block> for BlockIter<'tree> {
         // This transmute is just to extend the lifetime of rc.block
         // There is unsafety here because we need to be assured that
         // another copy of the rc (presumably the one in the tree)
-        // exists and will live as long as 'a.
-        Some(unsafe { transmute(&rc.block) } )
+        // exists and will live as long as 'tree.
+        Some(unsafe { transmute(&*rc) } )
       },
       None => None
     }
@@ -262,6 +271,7 @@ impl Blockchain {
       required_difficulty: genesis.header.target(),
       block: genesis,
       height: 0,
+      has_txdata: true,
       prev: RefCell::new(None),
       next: RefCell::new(None)
     });
@@ -277,9 +287,8 @@ impl Blockchain {
     }
   }
 
-  /// Locates a block in the chain and overwrites its txdata
-  pub fn add_txdata(&mut self, block: Block) -> bool {
-    match self.tree.lookup_mut(&block.header.hash().as_bitv()) {
+  fn replace_txdata(&mut self, hash: &Bitv, txdata: Vec<Transaction>, has_txdata: bool) -> bool {
+    match self.tree.lookup_mut(hash) {
       Some(existing_block) => {
         unsafe {
           // existing_block is an Rc. Rust will not let us mutate it under
@@ -295,12 +304,16 @@ impl Blockchain {
           // that the Vec (and more pointedly, its containing struct) does not
           // move, since this would invalidate the Rc that we are snookering.
           use std::mem::{forget, transmute};
-          let mutable_vec = transmute::<&Vec<Transaction>, &mut Vec<Transaction>>(&existing_block.block.txdata);
-          mutable_vec.clone_from(&block.txdata);
+          let mutable_vec: &mut Vec<Transaction> = transmute(&existing_block.block.txdata);
+          mutable_vec.clone_from(&txdata);
           // If mutable_vec went out of scope unhindered, it would deallocate
           // the Vec it points to, since Rust assumes that a mutable vector
           // is a unique reference (and this one is definitely not).
           forget(mutable_vec);
+          // Do the same thing with the txdata flac
+          let mutable_bool: &mut bool = transmute(&existing_block.has_txdata);
+          *mutable_bool = has_txdata;
+          forget(mutable_bool);
         }
         return true
       },
@@ -308,13 +321,27 @@ impl Blockchain {
     }
   }
 
+  /// Locates a block in the chain and overwrites its txdata
+  pub fn add_txdata(&mut self, block: Block) -> bool {
+    self.replace_txdata(&block.header.hash().as_bitv(), block.txdata, true)
+  }
+
+  /// Locates a block in the chain and removes its txdata
+  pub fn remove_txdata(&mut self, hash: Sha256dHash) -> bool {
+    self.replace_txdata(&hash.as_bitv(), vec![], false)
+  }
+
   /// Adds a block header to the chain
   pub fn add_header(&mut self, header: BlockHeader) -> bool {
-    self.add_block(Block { header: header, txdata: vec![] })
+    self.real_add_block(Block { header: header, txdata: vec![] }, false)
   }
 
   /// Adds a block to the chain
   pub fn add_block(&mut self, block: Block) -> bool {
+    self.real_add_block(block, true)
+  }
+
+  fn real_add_block(&mut self, block: Block, has_txdata: bool) -> bool {
     // get_prev optimizes the common case where we are extending the best tip
     fn get_prev<'a>(chain: &'a Blockchain, hash: Sha256dHash) -> Option<&'a Rc<BlockchainNode>> {
       if hash == chain.best_hash { return Some(&chain.best_tip); }
@@ -356,6 +383,7 @@ impl Blockchain {
           block: block,
           required_difficulty: difficulty,
           height: prev.height + 1,
+          has_txdata: has_txdata,
           prev: RefCell::new(Some(prev.clone())),
           next: RefCell::new(None)
         });
@@ -424,8 +452,8 @@ impl Blockchain {
   }
 
   /// An iterator over all blocks in the best chain
-  pub fn iter<'a>(&'a self) -> BlockIter<'a> {
-    BlockIter { index: self.tree.lookup(&self.genesis_hash.as_bitv()).map(|rc| rc.clone()) }
+  pub fn iter<'a>(&'a self, start_hash: Sha256dHash) -> BlockIter<'a> {
+    BlockIter { index: self.tree.lookup(&start_hash.as_bitv()).map(|rc| rc.clone()) }
   }
 }
 

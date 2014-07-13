@@ -24,3 +24,9 @@ pub fn blockchain_path() -> Path {
   Path::new("blockchain.dat")
 }
 
+/// Returns a path to the UTXO cache on disk
+pub fn utxo_set_path() -> Path {
+  Path::new("utxoset.dat")
+}
+
+

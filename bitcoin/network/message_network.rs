@@ -24,13 +24,13 @@ use serialize::hex::FromHex;
 
 use network::constants;
 use network::address::Address;
-use network::serialize::Message;
-use network::serialize::{Serializable, SerializeIter};
+use network::serialize::Serializable;
 use network::socket::Socket;
 
 /// Some simple messages
 
 /// The `version` message
+#[deriving(Show)]
 pub struct VersionMessage {
   /// The P2P network protocol version
   pub version: u32,
@@ -53,9 +53,6 @@ pub struct VersionMessage {
   /// filtering. Defaults to true.
   pub relay: bool
 }
-
-/// The `verack` message
-pub struct VersionAckMessage;
 
 impl VersionMessage {
   // TODO: we have fixed services and relay to 0
@@ -85,24 +82,6 @@ impl VersionMessage {
     })
   }
 }
-
-impl_message!(VersionMessage, "version")
-
-/// The `ping` message
-pub struct PingMessage {
-  /// A random nonce which should be matched in the responding `pong`
-  pub nonce: u64
-}
-impl_serializable!(PingMessage, nonce)
-impl_message!(PingMessage, "ping")
-
-/// The `pong` message
-pub struct PongMessage {
-  /// A random nonce which matches the `ping` that sent it
-  pub nonce: u64
-}
-impl_serializable!(PongMessage, nonce)
-impl_message!(PongMessage, "pong")
 
 impl Serializable for VersionMessage {
   fn serialize(&self) -> Vec<u8> {
@@ -134,18 +113,6 @@ impl Serializable for VersionMessage {
       relay: try!(Serializable::deserialize(iter.by_ref()))
     })
   }
-}
-
-impl VersionAckMessage {
-  /// Constructs a new `verack` message
-  pub fn new() -> VersionAckMessage { VersionAckMessage }
-}
-
-impl_message!(VersionAckMessage, "verack")
-
-impl Serializable for VersionAckMessage {
-  fn serialize(&self) -> Vec<u8> { vec![] }
-  fn deserialize<I: Iterator<u8>>(_: I) -> IoResult<VersionAckMessage> { Ok(VersionAckMessage) }
 }
 
 #[test]

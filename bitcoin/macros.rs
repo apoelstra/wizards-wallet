@@ -21,6 +21,9 @@
 #[macro_export]
 macro_rules! nu_select(
   ($($name:pat from $rx:expr => $code:expr),+) => ({
+    nu_select!{ $($name from $rx using recv => $code),+ }
+  });
+  ($($name:pat from $rx:expr using $meth:ident => $code:expr),+) => ({
     use rustrt::local::Local;
     use rustrt::task::Task;
     use sync::comm::Packet;
@@ -30,7 +33,7 @@ macro_rules! nu_select(
     // Is anything already ready to receive? Grab it without waiting.
     $(
       if (&$rx as &Packet).can_recv() {
-        let $name = $rx.recv();
+        let $name = $rx.$meth();
         $code
       }
     )else+
@@ -54,18 +57,26 @@ macro_rules! nu_select(
       let mut i = -1;
       $(
         // Abort every one, but only react to the first
-        if { i += 1; i < started_count } && packets[i].abort_selection() {
+        if { i += 1; i < started_count } &&
+           // If start_selection() failed, abort_selection() will fail too,
+           // but it still counts as "data available". FIXME: should we swap
+           // the following two conditions so that packets[started_count - 1].
+           // abort_selection() is never called?
+           (packets[i].abort_selection() || i == started_count - 1) {
           // Abort the remainder, ignoring their return values
+          i += 1;
           while i < started_count {
             packets[i].abort_selection();
             i += 1;
           }
           // React to the first
-          let $name = $rx.recv();
+          let $name = $rx.$meth();
           $code
         }
       )else+
-    else { fail!("we didn't find the ready receiver, but we should have had one"); }
+    else { 
+      println!("i = {} , started_count {}", i, started_count);
+      fail!("we didn't find the ready receiver, but we should have had one"); }
     }
   })
 )

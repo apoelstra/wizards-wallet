@@ -19,7 +19,7 @@
 //! regarding acting in-place or returning a copy, just whatever is useful.
 //!
 
-use core::fmt;
+use std::fmt;
 use std::intrinsics;
 use std::io::IoResult;
 use std::mem::transmute;

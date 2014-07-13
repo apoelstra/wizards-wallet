@@ -32,6 +32,7 @@
 // Experimental features we need
 #![feature(globs)]
 #![feature(phase)]
+#![feature(macro_rules)]
 
 // Coding conventions
 #![deny(non_uppercase_pattern_statics)]
@@ -51,7 +52,7 @@ extern crate time;
 use std::io::timer;
 
 use bitcoind::Bitcoind;
-use user_data::blockchain_path;
+use user_data::{blockchain_path, utxo_set_path};
 
 mod bitcoind;
 mod user_data;
@@ -62,7 +63,9 @@ fn main()
   println!("Starting the Wizards' Wallet");
 
   // Connect to bitcoind
-  let mut bitcoind = Bitcoind::new("127.0.0.1", 8333, blockchain_path());
+  let mut bitcoind = Bitcoind::new("127.0.0.1", 8333,
+                                   blockchain_path(),
+                                   utxo_set_path());
   // Loop until we get a successful connection
   loop {
     match bitcoind.listen() {

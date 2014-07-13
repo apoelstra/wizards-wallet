@@ -25,20 +25,9 @@ use std::io::net::{ip, tcp};
 
 use network::constants;
 use network::address::Address;
-use network::serialize::CheckedData;
-use network::serialize::CommandString;
-use network::serialize::Message;
+use network::message::{RawNetworkMessage, NetworkMessage, Version};
 use network::serialize::Serializable;
 use network::message_network::VersionMessage;
-use util::misc::prepend_err;
-
-/// Network message with header removed
-pub struct MessageData {
-  /// Raw message data
-  pub data: Vec<u8>,
-  /// The type as given in the network header
-  pub command: String
-}
 
 /// Format an IP address in the 16-byte bitcoin protocol serialization
 fn ipaddr_to_bitcoin_addr(ipaddr: &ip::IpAddr) -> [u8, ..16] {
@@ -129,7 +118,7 @@ impl Socket {
   }
 
   /// Produce a version message appropriate for this socket
-  pub fn version_message(&mut self, start_height: i32) -> IoResult<VersionMessage> {
+  pub fn version_message(&mut self, start_height: i32) -> IoResult<NetworkMessage> {
     let timestamp = now().to_timespec().sec;
     let recv_addr = self.receiver_address();
     let send_addr = self.sender_address();
@@ -143,7 +132,7 @@ impl Socket {
       _ => {}
     }
 
-    Ok(VersionMessage {
+    Ok(Version(VersionMessage {
       version: constants::PROTOCOL_VERSION,
       services: constants::SERVICES,
       timestamp: timestamp,
@@ -153,23 +142,18 @@ impl Socket {
       user_agent: self.user_agent.clone(),
       start_height: start_height,
       relay: false
-    })
+    }))
   }
 
   /// Send a general message across the line
-  pub fn send_message(&mut self, message: &Message) -> IoResult<()> {
+  pub fn send_message(&mut self, payload: NetworkMessage) -> IoResult<()> {
     if self.stream.is_none() {
       Err(standard_error(NotConnected))
     }
     else {
-      let payload = message.serialize();
-
-      let mut wire_message = self.magic.serialize();
-      wire_message.extend(CommandString(message.command()).serialize().move_iter());
-      wire_message.extend(CheckedData(payload).serialize().move_iter());
-
       let stream = self.stream.get_mut_ref();
-      match stream.write(wire_message.as_slice()) {
+      let message = RawNetworkMessage { magic: self.magic, payload: payload };
+      match stream.write(message.serialize().as_slice()) {
         Ok(_) => Ok(()),
         Err(e) => Err(e)
       }
@@ -178,29 +162,46 @@ impl Socket {
 
   /// Receive the next message from the peer, decoding the network header
   /// and verifying its correctness. Returns the undecoded payload.
-  pub fn receive_message(&mut self) -> IoResult<MessageData> {
+  pub fn receive_message(&mut self) -> IoResult<NetworkMessage> {
     match self.stream {
       None => Err(standard_error(NotConnected)),
       Some(ref mut s) => {
         let mut read_err = None;
-        let ret = {
-          let mut iter = s.bytes().filter_map(|res| match res { Ok(ch) => Some(ch), Err(e) => { read_err = Some(e); None } });
-          let magic: u32 = try!(prepend_err("magic", Serializable::deserialize(iter.by_ref())));
-          // Check magic before decoding further
-          if magic != self.magic {
-            return Err(IoError {
-              kind: OtherIoError,
-              desc: "bad magic",
-              detail: Some(format!("magic {:x} did not match network magic {:x}", magic, self.magic)),
+        // We need a new scope since the closure in here borrows read_err,
+        // and we try to read it afterward. Letting `iter` go out fixes it.
+        let ret: IoResult<RawNetworkMessage> = {
+          // Set up iterator so we will catch network errors properly
+          let iter = s.bytes().filter_map(|res|
+            match res {
+              Ok(ch) => Some(ch),
+              Err(e) => { read_err = Some(e); None }
             });
-          }
-          let CommandString(command): CommandString = try!(prepend_err("command", Serializable::deserialize(iter.by_ref())));
-          let CheckedData(payload): CheckedData = try!(prepend_err("payload", Serializable::deserialize(iter.by_ref())));
-          MessageData { command: command, data: payload }
+          // Receive message
+          Serializable::deserialize(iter)
         };
+        // Return
         match read_err {
+          // Network errors get priority since they are probably more meaningful
           Some(e) => Err(e),
-          _ => Ok(ret)
+          _ => {
+            match ret {
+              // Next come parse errors
+              Err(e) => Err(e),
+              Ok(ret) => {
+                // Finally magic (this should come before parse error, but we can't
+                // get to it if the deserialization failed). TODO restructure this
+                if ret.magic != self.magic {
+                  Err(IoError {
+                    kind: OtherIoError,
+                    desc: "bad magic",
+                    detail: Some(format!("got magic {:x}, expected {:x}", ret.magic, self.magic)),
+                  })
+                } else {
+                  Ok(ret.payload)
+                }
+              }
+            }
+          }
         }
       }
     }

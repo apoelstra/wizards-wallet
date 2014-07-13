@@ -12,7 +12,7 @@ bitcoin-docs: bitcoin/*.rs bitcoin/*/*.rs
 wizards-wallet: *.rs libbitcoin.rlib
 	rustc --opt-level=3 -L . wizards-wallet.rs
 
-check: *.rs libbitcoin-c7b18f3c-0.1-pre.rlib bitcoin/*.rs bitcoin/*/*.rs
+check: *.rs libbitcoin.rlib bitcoin/*.rs bitcoin/*/*.rs
 	rustc --test --crate-type=rlib bitcoin/lib.rs -o testbin
 	./testbin
 	rm testbin

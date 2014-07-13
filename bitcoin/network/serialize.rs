@@ -14,9 +14,9 @@
 
 //! # Network Serialization
 //!
-//! This module defines the `Serializable` and `Message` traits which are used
-//! for (de)serializing Bitcoin objects for transmission on the network. It
-//! also defines (de)serialization routines for many primitives.
+//! This module defines the `Serializable` trait which is used for
+//! (de)serializing Bitcoin objects for transmission on the network.
+//! It also defines (de)serialization routines for many primitives.
 //!
 
 use collections::Vec;
@@ -74,16 +74,8 @@ impl<'a> Iterator<u8> for SerializeIter<'a> {
   }
 }
 
-#[deriving(PartialEq, Clone, Show)]
 /// A string which must be encoded as 12 bytes, used in network message headers
-pub struct CommandString(pub String);
 
-impl Str for CommandString {
-  fn as_slice<'a>(&'a self) -> &'a str {
-    let &CommandString(ref inner_str) = self;
-    inner_str.as_slice()
-  }
-}
 
 #[deriving(PartialEq, Clone, Show)]
 /// Data which must be preceded by a 4-byte checksum
@@ -145,13 +137,8 @@ pub trait Serializable {
   }
 }
 
-/// A message which can be sent on the Bitcoin network
-pub trait Message : Serializable {
-  /// Returns the name of the message as encoded in the network header
-  fn command(&self) -> String;
-}
-
 /// A variable-length unsigned integer
+#[deriving(PartialEq, Show)]
 pub enum VarInt {
   /// 8-bit int
   VarU8(u8),
@@ -411,26 +398,6 @@ impl Serializable for String {
   }
 }
 
-impl Serializable for CommandString {
-  fn serialize(&self) -> Vec<u8> {
-    let &CommandString(ref inner_str) = self;
-    let mut rawbytes = [0u8, ..12]; 
-    rawbytes.copy_from(inner_str.as_bytes().as_slice());
-    Vec::from_slice(rawbytes.as_slice())
-  }
-
-  fn deserialize<I: Iterator<u8>>(iter: I) -> IoResult<CommandString> {
-    let mut fixiter = iter.fixed_take(12);
-    let rv: String = FromIterator::from_iter(fixiter.by_ref().filter_map(|u| if u > 0 { Some(u as char) } else { None }));
-    // Once we've read the string, run out the iterator
-    for _ in fixiter {}
-    match fixiter.is_err() {
-      false => Ok(CommandString(rv)),
-      true => Err(standard_error(InvalidInput))
-    }
-  }
-}
-
 impl<T: Serializable> Serializable for Vec<T> {
   fn serialize(&self) -> Vec<u8> {
     let n_elems = u64_to_varint(self.len() as u64);
@@ -596,13 +563,6 @@ fn serialize_strbuf_test() {
 }
 
 #[test]
-fn serialize_commandstring_test() {
-  let cs = CommandString(String::from_str("Andrew"));
-  assert_eq!(cs.as_slice(), "Andrew");
-  assert_eq!(cs.serialize(), vec![0x41u8, 0x6e, 0x64, 0x72, 0x65, 0x77, 0, 0, 0, 0, 0, 0]);
-}
-
-#[test]
 fn serialize_checkeddata_test() {
   let cd = CheckedData(vec![1u8, 2, 3, 4, 5]);
   assert_eq!(cd.serialize(), vec![5, 0, 0, 0, 162, 107, 175, 90, 1, 2, 3, 4, 5]);
@@ -685,16 +645,6 @@ fn deserialize_vec_test() {
 #[test]
 fn deserialize_strbuf_test() {
   assert_eq!(Serializable::deserialize([6u8, 0x41, 0x6e, 0x64, 0x72, 0x65, 0x77].iter().map(|n| *n)), Ok(String::from_str("Andrew")));
-}
-
-#[test]
-fn deserialize_commandstring_test() {
-  let cs: IoResult<CommandString> = Serializable::deserialize([0x41u8, 0x6e, 0x64, 0x72, 0x65, 0x77, 0, 0, 0, 0, 0, 0].iter().map(|n| *n));
-  assert!(cs.is_ok());
-  assert_eq!(cs.unwrap(), CommandString(String::from_str("Andrew")));
-
-  let short_cs: IoResult<CommandString> = Serializable::deserialize([0x41u8, 0x6e, 0x64, 0x72, 0x65, 0x77, 0, 0, 0, 0, 0].iter().map(|n| *n));
-  assert!(short_cs.is_err());
 }
 
 #[test]

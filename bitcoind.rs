@@ -19,39 +19,66 @@ use bitcoin::blockdata::blockchain::Blockchain;
 use bitcoin::blockdata::constants::genesis_block;
 use bitcoin::blockdata::utxoset::UtxoSet;
 use bitcoin::network::serialize::Serializable;
-use bitcoin::network::listener::{Listener, ListenerChannels};
+use bitcoin::network::listener::Listener;
 use bitcoin::network::socket::Socket;
-use bitcoin::network::message_blockdata::{GetDataMessage, GetHeadersMessage};
+use bitcoin::network::message::NetworkMessage;
+use bitcoin::network::message;
+use bitcoin::network::message_blockdata::{GetHeadersMessage, Inventory, InvBlock};
 use bitcoin::util::misc::consume_err;
-use bitcoin::util::hash::{Sha256dHash, zero_hash};
+use bitcoin::util::hash::zero_hash;
 
-struct IdleState<'a> {
+/// We use this IdleState structure to avoid having Option<T>
+/// on some stuff that isn't available during bootstrap.
+struct IdleState {
   sock: Socket,
-  chan: ListenerChannels<'a>,
+  net_chan: Receiver<NetworkMessage>,
   blockchain: Blockchain,
+  utxo_set: UtxoSet
 }
 
-enum StartupState<'a> {
+enum StartupState {
   Init,
-  LoadFromDisk(Socket, ListenerChannels<'a>),
-  SyncBlockchain(Socket, ListenerChannels<'a>, Blockchain, Sha256dHash),
-//  SyncUtxoSet(uint),            // height
-  SaveBlockchain(Box<StartupState<'a>>), // next state
-  Idle(IdleState<'a>)
+  LoadFromDisk(Socket, Receiver<NetworkMessage>),
+  SyncBlockchain(IdleState),
+  SyncUtxoSet(IdleState),
+  SaveToDisk(IdleState), 
+  Idle(IdleState)
 }
 
 pub struct Bitcoind {
   peer_address: String,
   peer_port: u16,
-  blockchain_path: Path
+  blockchain_path: Path,
+  utxo_set_path: Path
 }
 
+macro_rules! with_next_message(
+  ( $recv:expr, $( $name:pat => $code:expr )* ) => (
+    {
+      let mut ret;
+      loop {
+        match $recv {
+          $(
+            $name => {
+              ret = $code;
+              break;
+            },
+          )*
+          _ => {}
+        };
+      }
+      ret
+    }
+  )
+)
+
 impl Bitcoind {
-  pub fn new(peer_address: &str, peer_port: u16, blockchain_path: Path) -> Bitcoind {
+  pub fn new(peer_address: &str, peer_port: u16, blockchain_path: Path, utxo_set_path: Path) -> Bitcoind {
     Bitcoind {
       peer_address: String::from_str(peer_address),
       peer_port: peer_port,
-      blockchain_path: blockchain_path
+      blockchain_path: blockchain_path,
+      utxo_set_path: utxo_set_path
     }
   }
 
@@ -64,11 +91,11 @@ impl Bitcoind {
         // First startup
         Init => {
           // Open socket
-          let (channels, sock) = try!(self.start());
-          LoadFromDisk(sock, channels)
+          let (chan, sock) = try!(self.start());
+          LoadFromDisk(sock, chan)
         }
-        // Load cached blockchain and utxoset from disk
-        LoadFromDisk(sock, channels) => {
+        // Load cached blockchain and utxo set from disk
+        LoadFromDisk(sock, chan) => {
           println!("Loading blockchain...");
           // Load blockchain from disk
           let blockchain = match Serializable::deserialize_file(&self.blockchain_path) {
@@ -78,88 +105,146 @@ impl Bitcoind {
               Blockchain::new(genesis_block())
             }
           };
-          let best_tip_hash = blockchain.best_tip().header.hash();
-          SyncBlockchain(sock, channels, blockchain, best_tip_hash)
+          println!("Loading utxo set...");
+          let utxo_set = match Serializable::deserialize_file(&self.utxo_set_path) {
+            Ok(utxo_set) => utxo_set,
+            Err(e) => {
+              println!("Failed to load UTXO set: {:}, starting from genesis.", e);
+              UtxoSet::new(genesis_block())
+            }
+          };
+
+          SyncBlockchain(IdleState {
+              sock: sock,
+              net_chan: chan,
+              blockchain: blockchain,
+              utxo_set: utxo_set
+            })
         },
         // Synchronize the blockchain with the peer
-        SyncBlockchain(mut sock, channels, mut blockchain, last_best_tip_hash) => {
-          println!("Headers sync: last best tip {}", last_best_tip_hash);
-          // Request headers
-          consume_err("Headers sync: failed to send `headers` message",
-            sock.send_message(&GetHeadersMessage::new(blockchain.locator_hashes(), zero_hash())));
-          // Loop through received headers
-          loop {
-            match channels.header_rx.recv() {
-              // Each `headers` message is passed to us as a None-terminated list of headers
-              None => break,
-              Some(header) => {
-                if !blockchain.add_header(*header) {
-                  println!("Headers sync: failed to add {} to chain", header.hash());
+        SyncBlockchain(mut idle_state) => {
+          println!("Headers sync: last best tip {}", idle_state.blockchain.best_tip().header.hash());
+          let mut done = false;
+          while !done {
+            // Request headers
+            consume_err("Headers sync: failed to send `headers` message",
+              idle_state.sock.send_message(message::GetHeaders(
+                  GetHeadersMessage::new(idle_state.blockchain.locator_hashes(),
+                                         zero_hash()))));
+            // Loop through received headers
+            with_next_message!(idle_state.net_chan.recv(),
+              message::Headers(headers) => {
+                for lone_header in headers.iter() {
+                  if !idle_state.blockchain.add_header(lone_header.header) {
+                     println!("Headers sync: failed to add {} to chain", lone_header.header.hash());
+                  }
+                }
+                // We are done if this `headers` message did not update our status
+                done = headers.len() == 0;
+              }
+              message::Ping(nonce) => {
+                consume_err("Warning: failed to send pong in response to ping",
+                  idle_state.sock.send_message(message::Pong(nonce)));
+              }
+            );
+          }
+          println!("Done sync.");
+          SyncUtxoSet(idle_state)
+        },
+        SyncUtxoSet(mut idle_state) => {
+          let last_hash = idle_state.utxo_set.last_hash();
+          println!("utxo set last hash {}", last_hash);
+          let mut failed = false;
+          // TODO: unwind any reorgs
+          // Loop through blockchain for new data
+          {
+            // Skip first block, since that's the one we already have
+            let mut iter = idle_state.blockchain.iter(last_hash);
+            let mut skipped_first = false;
+            // Get second block
+            let mut next_block = iter.next();
+            // Process blocks, prefetching the next block before preprocessing this one
+            while !failed && next_block.is_some() {
+              // Prefetch next block
+              let prefetch = iter.next();
+              if prefetch.is_some() && !prefetch.unwrap().has_txdata {
+                let inv = Inventory { inv_type: InvBlock, hash: prefetch.unwrap().block.header.hash() };
+                consume_err("UTXO sync: failed to send `getdata` message",
+                  idle_state.sock.send_message(message::GetData(vec![inv])));
+              }
+              if !skipped_first {
+                skipped_first = true;
+                continue;
+              }
+              // Process this one
+              if next_block.unwrap().height % 100 == 0 {
+                println!("processing block {}", next_block.unwrap().height);
+              }
+              if next_block.unwrap().has_txdata {
+                if !idle_state.utxo_set.update(&next_block.unwrap().block) {
+                  println!("Failed to update UTXO set with block {}", next_block.unwrap().block.header.hash());
+                  failed = true;
+                  break;
+                }
+              } else {
+                let mut got_block = false;
+                while !got_block {
+                  with_next_message!(idle_state.net_chan.recv(),
+                    message::Block(block) => {
+                      if block.header.hash() == next_block.unwrap().block.header.hash() {
+                        if !idle_state.utxo_set.update(&block) {
+                          println!("Failed to update UTXO set with block {}", next_block.unwrap().block.header.hash());
+                          failed = true;
+                        }
+                        // ignore any other block messages for now
+                        got_block = true;
+                      }
+                    }
+                    message::NotFound(_) => {
+                      println!("UTXO sync: received `notfound` from sync peer, failing sync.");
+                      failed = true;
+                      got_block = true;
+                    }
+                    message::Ping(nonce) => {
+                      consume_err("Warning: failed to send pong in response to ping",
+                        idle_state.sock.send_message(message::Pong(nonce)));
+                    }
+                  )
                 }
               }
+              next_block = prefetch;
             }
           }
-          // Check if we are done sync'ing
-          let new_best_tip_hash = blockchain.best_tip().header.hash();
-          if new_best_tip_hash != last_best_tip_hash {
-            SyncBlockchain(sock, channels, blockchain, new_best_tip_hash)
+          // TODO: save last 100 blocks
+          if failed {
+            println!("Failed to sync UTXO set, trying to resync chain.");
+            SyncBlockchain(idle_state)
           } else {
-            println!("Done sync.");
-            SaveBlockchain(box Idle(IdleState {
-              sock: sock,
-              chan: channels,
-              blockchain: blockchain
-            }))
+            SaveToDisk(idle_state)
           }
         },
         // Idle loop
         Idle(mut idle_state) => {
           println!("Idling...");
-          nu_select!{
-            block from idle_state.chan.block_rx => {
-              println!("Received block: {:x}", block.header.hash());
-              if !idle_state.blockchain.add_header(block.header) {
-                println!("failed to add block {:x} to chain", block.header.hash());
-              }
-            },
-            header_opt from idle_state.chan.header_rx => {
-              println!("Received header: {}", header_opt.as_ref().map(|h| h.hash()));
-              match header_opt {
-                Some(header) => {
-                  if !idle_state.blockchain.add_header(*header) {
-                    println!("failed to add block {:x} to chain", header.hash());
-                  }
-                }
-                None => {}
-              }
-            },
-            inv from idle_state.chan.inv_rx => {
-              println!("Received inv.");
-              let sendmsg = GetDataMessage(inv);
-              // Send
-              consume_err("Warning: failed to send getdata in response to inv",
-                idle_state.sock.send_message(&sendmsg));
-            }
+          let recv = idle_state.net_chan.recv();
+          idle_message(&mut idle_state, recv);
+          Idle(idle_state)
+        },
+        // Temporary states
+        SaveToDisk(idle_state) => {
+          println!("Saving blockchain...");
+          match idle_state.blockchain.serialize_file(&self.blockchain_path) {
+            Ok(()) => { println!("Successfully saved blockchain.") },
+            Err(e) => { println!("failed to write blockchain: {:}", e); }
+          }
+          println!("Saving UTXO set...");
+          match idle_state.utxo_set.serialize_file(&self.utxo_set_path) {
+            Ok(()) => { println!("Successfully saved UTXO set.") },
+            Err(e) => { println!("failed to write UTXO set: {:}", e); }
           }
           Idle(idle_state)
         }
-        // Temporary states
-        SaveBlockchain(box next_state) => {
-          match next_state {
-            Idle(ref idle_state) => {
-              println!("Saving blockchain...");
-              match idle_state.blockchain.serialize_file(&self.blockchain_path) {
-                Ok(()) => { println!("Successfully saved blockchain.") },
-                Err(e) => { println!("failed to write blockchain: {:}", e); }
-              }
-            },
-            _ => {
-              println!("Warn: tried to save blockchain in non-idle state. Refusing.");
-            }
-          }
-          next_state
-        }
-      }
+      };
     }
   }
 }
@@ -171,6 +256,45 @@ impl Listener for Bitcoind {
 
   fn port(&self) -> u16 {
     self.peer_port
+  }
+}
+
+/// Idle message handler
+fn idle_message(idle_state: &mut IdleState, message: NetworkMessage) {
+  match message {
+    message::Version(_) => {
+      // TODO: actually read version message
+      consume_err("Warning: failed to send getdata in response to inv",
+        idle_state.sock.send_message(message::Verack));
+    }
+    message::Verack => {}
+    message::Block(block) => {
+      println!("Received block: {:x}", block.header.hash());
+      if !idle_state.blockchain.add_header(block.header) {
+        println!("failed to add block {:x} to chain", block.header.hash());
+      }
+    },
+    message::Headers(headers) => {
+      for lone_header in headers.iter() {
+        println!("Received header: {}, ignoring.", lone_header.header.hash());
+      }
+    },
+    message::Inv(inv) => {
+      println!("Received inv.");
+      let sendmsg = message::GetData(inv);
+      // Send
+      consume_err("Warning: failed to send getdata in response to inv",
+        idle_state.sock.send_message(sendmsg));
+    }
+    message::GetData(_) => {}
+    message::NotFound(_) => {}
+    message::GetBlocks(_) => {}
+    message::GetHeaders(_) => {}
+    message::Ping(nonce) => {
+      consume_err("Warning: failed to send pong in response to ping",
+        idle_state.sock.send_message(message::Pong(nonce)));
+    }
+    message::Pong(_) => {}
   }
 }
 

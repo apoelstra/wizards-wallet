@@ -24,6 +24,7 @@ pub mod serialize;
 
 pub mod address;
 pub mod listener;
+pub mod message;
 pub mod message_blockdata;
 pub mod message_network;
 

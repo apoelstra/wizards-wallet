@@ -43,7 +43,7 @@
 extern crate rand;
 extern crate time;
 
-extern crate bitcoin;
+#[phase(plugin,link)] extern crate bitcoin;
 
 mod bitcoind;
 mod user_data;

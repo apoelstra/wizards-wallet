@@ -18,6 +18,7 @@
 //! network addresses in Bitcoin messages.
 //!
 
+use std::fmt;
 use std::io::{IoResult, standard_error, InvalidInput};
 
 use network::serialize::Serializable;
@@ -57,6 +58,14 @@ impl Serializable for Address {
       }
     };
     Ok(ret)
+  }
+}
+
+impl fmt::Show for Address {
+  fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    // TODO: render services and hex-ize address
+    write!(f, "Address {{services: {}, address: {}, port: {}}}",
+              self.services, self.address.as_slice(), self.port)
   }
 }
 
