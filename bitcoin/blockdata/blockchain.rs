@@ -23,7 +23,6 @@
 //!
 
 use alloc::rc::Rc;
-use collections::bitv::Bitv;
 use std::cell::{Ref, RefCell};
 use std::io::{IoResult, IoError, OtherIoError};
 
@@ -62,7 +61,7 @@ impl BlockchainNode {
     if cache.is_some() {
       return Some(cache.get_ref().clone())
     }
-    match tree.lookup(&self.block.header.prev_blockhash.as_bitv()) {
+    match tree.lookup(&self.block.header.prev_blockhash.as_uint256(), 256) {
       Some(prev) => { *cache = Some(prev.clone()); return Some(prev.clone()); }
       None => { return None; }
     }
@@ -144,7 +143,7 @@ impl Serializable for Blockchain {
     let best_hash: Sha256dHash = try!(prepend_err("best_hash", Serializable::deserialize(iter.by_ref())));
     let genesis_hash: Sha256dHash = try!(prepend_err("genesis_hash", Serializable::deserialize(iter.by_ref())));
     // Lookup best tip
-    let best = match tree.lookup(&best_hash.as_bitv()) {
+    let best = match tree.lookup(&best_hash.as_uint256(), 256) {
       Some(rc) => rc.clone(),
       None => { return Err(IoError {
           kind: OtherIoError,
@@ -154,7 +153,7 @@ impl Serializable for Blockchain {
       }
     };
     // Lookup genesis
-    if tree.lookup(&genesis_hash.as_bitv()).is_none() {
+    if tree.lookup(&genesis_hash.as_uint256(), 256).is_none() {
       return Err(IoError {
         kind: OtherIoError,
         desc: "genesis block not found in tree",
@@ -278,7 +277,7 @@ impl Blockchain {
     Blockchain {
       tree: {
         let mut pat = PatriciaTree::new();
-        pat.insert(&genhash.as_bitv(), rc_gen.clone());
+        pat.insert(&genhash.as_uint256(), 256, rc_gen.clone());
         pat
       },
       best_hash: genhash,
@@ -287,8 +286,8 @@ impl Blockchain {
     }
   }
 
-  fn replace_txdata(&mut self, hash: &Bitv, txdata: Vec<Transaction>, has_txdata: bool) -> bool {
-    match self.tree.lookup_mut(hash) {
+  fn replace_txdata(&mut self, hash: &Uint256, txdata: Vec<Transaction>, has_txdata: bool) -> bool {
+    match self.tree.lookup_mut(hash, 256) {
       Some(existing_block) => {
         unsafe {
           // existing_block is an Rc. Rust will not let us mutate it under
@@ -323,12 +322,12 @@ impl Blockchain {
 
   /// Locates a block in the chain and overwrites its txdata
   pub fn add_txdata(&mut self, block: Block) -> bool {
-    self.replace_txdata(&block.header.hash().as_bitv(), block.txdata, true)
+    self.replace_txdata(&block.header.hash().as_uint256(), block.txdata, true)
   }
 
   /// Locates a block in the chain and removes its txdata
   pub fn remove_txdata(&mut self, hash: Sha256dHash) -> bool {
-    self.replace_txdata(&hash.as_bitv(), vec![], false)
+    self.replace_txdata(&hash.as_uint256(), vec![], false)
   }
 
   /// Adds a block header to the chain
@@ -345,7 +344,7 @@ impl Blockchain {
     // get_prev optimizes the common case where we are extending the best tip
     fn get_prev<'a>(chain: &'a Blockchain, hash: Sha256dHash) -> Option<&'a Rc<BlockchainNode>> {
       if hash == chain.best_hash { return Some(&chain.best_tip); }
-      chain.tree.lookup(&hash.as_bitv())
+      chain.tree.lookup(&hash.as_uint256(), 256)
     }
     // Construct node, if possible
     let rc_block = match get_prev(self, block.header.prev_blockhash) {
@@ -402,7 +401,7 @@ impl Blockchain {
     }
 
     // Insert the new block
-    self.tree.insert(&rc_block.block.header.hash().as_bitv(), rc_block.clone());
+    self.tree.insert(&rc_block.block.header.hash().as_uint256(), 256, rc_block.clone());
     // Replace the best tip if necessary
     if rc_block.total_work > self.best_tip.total_work {
       self.set_best_tip(rc_block);
@@ -453,7 +452,7 @@ impl Blockchain {
 
   /// An iterator over all blocks in the best chain
   pub fn iter<'a>(&'a self, start_hash: Sha256dHash) -> BlockIter<'a> {
-    BlockIter { index: self.tree.lookup(&start_hash.as_bitv()).map(|rc| rc.clone()) }
+    BlockIter { index: self.tree.lookup(&start_hash.as_uint256(), 256).map(|rc| rc.clone()) }
   }
 }
 

@@ -55,6 +55,7 @@ use bitcoind::Bitcoind;
 use user_data::{blockchain_path, utxo_set_path};
 
 mod bitcoind;
+mod constants;
 mod user_data;
 
 /// Entry point

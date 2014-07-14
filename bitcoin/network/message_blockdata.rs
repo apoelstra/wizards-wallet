@@ -28,7 +28,7 @@ use network::constants;
 use network::serialize::{Serializable, SerializeIter};
 use util::hash::Sha256dHash;
 
-#[deriving(PartialEq, Show)]
+#[deriving(Clone, PartialEq, Show)]
 /// The type of an inventory object
 pub enum InvType {
   /// Error --- these inventories can be ignored
@@ -68,7 +68,7 @@ pub struct GetHeadersMessage {
 }
 
 /// An inventory object --- a reference to a Bitcoin object
-#[deriving(Show)]
+#[deriving(Clone, Show)]
 pub struct Inventory {
   /// The type of object that is referenced
   pub inv_type: InvType,

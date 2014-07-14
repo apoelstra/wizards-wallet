@@ -24,8 +24,11 @@ use bitcoin::network::socket::Socket;
 use bitcoin::network::message::NetworkMessage;
 use bitcoin::network::message;
 use bitcoin::network::message_blockdata::{GetHeadersMessage, Inventory, InvBlock};
+use bitcoin::util::patricia_tree::PatriciaTree;
 use bitcoin::util::misc::consume_err;
 use bitcoin::util::hash::zero_hash;
+
+use constants::UTXO_SYNC_N_BLOCKS;
 
 /// We use this IdleState structure to avoid having Option<T>
 /// on some stuff that isn't available during bootstrap.
@@ -40,7 +43,7 @@ enum StartupState {
   Init,
   LoadFromDisk(Socket, Receiver<NetworkMessage>),
   SyncBlockchain(IdleState),
-  SyncUtxoSet(IdleState),
+  SyncUtxoSet(IdleState, Vec<Inventory>),
   SaveToDisk(IdleState), 
   Idle(IdleState)
 }
@@ -149,70 +152,62 @@ impl Bitcoind {
             );
           }
           println!("Done sync.");
-          SyncUtxoSet(idle_state)
+          SyncUtxoSet(idle_state, Vec::with_capacity(UTXO_SYNC_N_BLOCKS))
         },
-        SyncUtxoSet(mut idle_state) => {
+        SyncUtxoSet(mut idle_state, mut cache) => {
           let last_hash = idle_state.utxo_set.last_hash();
           println!("utxo set last hash {}", last_hash);
           let mut failed = false;
+
+          cache.clear();
           // TODO: unwind any reorgs
           // Loop through blockchain for new data
-          {
-            // Skip first block, since that's the one we already have
-            let mut iter = idle_state.blockchain.iter(last_hash);
-            let mut skipped_first = false;
-            // Get second block
-            let mut next_block = iter.next();
-            // Process blocks, prefetching the next block before preprocessing this one
-            while !failed && next_block.is_some() {
-              // Prefetch next block
-              let prefetch = iter.next();
-              if prefetch.is_some() && !prefetch.unwrap().has_txdata {
-                let inv = Inventory { inv_type: InvBlock, hash: prefetch.unwrap().block.header.hash() };
-                consume_err("UTXO sync: failed to send `getdata` message",
-                  idle_state.sock.send_message(message::GetData(vec![inv])));
+          for (count, node) in idle_state.blockchain.iter(last_hash).skip(1).enumerate() {
+            cache.push(Inventory { inv_type: InvBlock, hash: node.block.header.hash() });
+
+            // Every so often, send a new message
+            if (count + 1) % UTXO_SYNC_N_BLOCKS == 0 {
+              if (count + 1) % 100 == 0 {
+                println!("Sending getdata, count {} n_utxos {}", count + 1, idle_state.utxo_set.n_utxos());
               }
-              if !skipped_first {
-                skipped_first = true;
-                continue;
+              consume_err("UTXO sync: failed to send `getdata` message",
+                idle_state.sock.send_message(message::GetData(cache.clone())));
+
+              let mut block_count = 0;
+              let mut recv_data = PatriciaTree::new();
+              while block_count < UTXO_SYNC_N_BLOCKS {
+                with_next_message!(idle_state.net_chan.recv(),
+                  message::Block(block) => {
+                    recv_data.insert(&block.header.hash().as_uint256(), 256, block);
+                    block_count += 1;
+                  }
+                  message::NotFound(_) => {
+                    println!("UTXO sync: received `notfound` from sync peer, failing sync.");
+                    failed = true;
+                    block_count += 1;
+                  }
+                  message::Ping(nonce) => {
+                    consume_err("Warning: failed to send pong in response to ping",
+                      idle_state.sock.send_message(message::Pong(nonce)));
+                  }
+                )
               }
-              // Process this one
-              if next_block.unwrap().height % 100 == 0 {
-                println!("processing block {}", next_block.unwrap().height);
-              }
-              if next_block.unwrap().has_txdata {
-                if !idle_state.utxo_set.update(&next_block.unwrap().block) {
-                  println!("Failed to update UTXO set with block {}", next_block.unwrap().block.header.hash());
-                  failed = true;
-                  break;
-                }
-              } else {
-                let mut got_block = false;
-                while !got_block {
-                  with_next_message!(idle_state.net_chan.recv(),
-                    message::Block(block) => {
-                      if block.header.hash() == next_block.unwrap().block.header.hash() {
-                        if !idle_state.utxo_set.update(&block) {
-                          println!("Failed to update UTXO set with block {}", next_block.unwrap().block.header.hash());
-                          failed = true;
-                        }
-                        // ignore any other block messages for now
-                        got_block = true;
-                      }
-                    }
-                    message::NotFound(_) => {
-                      println!("UTXO sync: received `notfound` from sync peer, failing sync.");
+              for recv_inv in cache.iter() {
+                let block_opt = recv_data.lookup(&recv_inv.hash.as_uint256(), 256);
+                match block_opt {
+                  Some(block) => {
+                    if !idle_state.utxo_set.update(block) {
+                      println!("Failed to update UTXO set with block {}", block.header.hash());
                       failed = true;
-                      got_block = true;
                     }
-                    message::Ping(nonce) => {
-                      consume_err("Warning: failed to send pong in response to ping",
-                        idle_state.sock.send_message(message::Pong(nonce)));
-                    }
-                  )
+                  }
+                  None => {
+                    println!("Uh oh, requested block {} but didn't get it!", recv_inv.hash);
+                    failed = true;
+                  }
                 }
               }
-              next_block = prefetch;
+              cache.clear();
             }
           }
           // TODO: save last 100 blocks

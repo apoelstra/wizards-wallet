@@ -22,6 +22,7 @@
 use std::fmt;
 use std::intrinsics;
 use std::io::IoResult;
+use std::num::Zero;
 use std::mem::transmute;
 
 use network::serialize::Serializable;
@@ -60,11 +61,11 @@ impl Uint256 {
     let bit_shift = shift % 64;
     for i in range(0u, 4) {
       // Shift
-      if i + word_shift < 4 {
+      if bit_shift < 64 && i + word_shift < 4 {
         ret[i + word_shift] += original[i] << bit_shift;
       }
       // Carry
-      if i + word_shift + 1 < 4 {
+      if bit_shift > 0 && i + word_shift + 1 < 4 {
         ret[i + word_shift + 1] += original[i] >> (64 - bit_shift);
       }
     }
@@ -80,11 +81,11 @@ impl Uint256 {
     let bit_shift = shift % 64;
     for i in range(0u, 4) {
       // Shift
-      if i - word_shift < 4 {
+      if bit_shift < 64 && i - word_shift < 4 {
         ret[i - word_shift] += original[i] >> bit_shift;
       }
       // Carry
-      if i - word_shift - 1 < 4 {
+      if bit_shift > 0 && i - word_shift - 1 < 4 {
         ret[i - word_shift - 1] += original[i] << (64 - bit_shift);
       }
     }
@@ -98,23 +99,6 @@ impl Uint256 {
     for i in range(0u, 4) {
       arr[i] = !arr[i];
     }
-  }
-
-  /// Add
-  pub fn add(&self, other: &Uint256) -> Uint256 {
-    let &Uint256(ref me) = self;
-    let &Uint256(ref you) = other;
-    let mut ret = [0u64, 0, 0, 0];
-    let mut carry = [0u64, 0, 0, 0];
-    let mut b_carry = false;
-    for i in range(0u, 4) {
-      ret[i] = me[i] + you[i];
-      if i < 3 && ret[i] < me[i] {
-        carry[i + 1] = 1;
-        b_carry = true;
-      }
-    }
-    if b_carry { Uint256(ret).add(&Uint256(carry)) } else { Uint256(ret) }
   }
 
   /// Subtract
@@ -187,6 +171,78 @@ impl Uint256 {
       ret[i] = lower + (upper << 32);
     }
     Uint256(ret).add(&Uint256(carry))
+  }
+
+  /// Bitwise and with `n` ones
+  pub fn mask(&self, n: uint) -> Uint256 {
+    let &Uint256(ref arr) = self;
+    match n {
+      n if n < 0x40 => Uint256([arr[0] & ((1 << n) - 1), 0, 0, 0]),
+      n if n < 0x80 => Uint256([arr[0], arr[1] & ((1 << (n - 0x40)) - 1), 0, 0]),
+      n if n < 0xC0 => Uint256([arr[0], arr[1], arr[2] & ((1 << (n - 0x80)) - 1), 0]),
+      n if n < 0x100 => Uint256([arr[0], arr[1], arr[2], arr[3] & ((1 << (n - 0xC0)) - 1)]),
+      _ => *self
+    }
+  }
+
+  /// Returns a number which is just the bits from start to end
+  pub fn bit_slice(&self, start: uint, end: uint) -> Uint256 {
+    self.shr(start).mask(end - start)
+  }
+
+  /// Bitwise and
+  pub fn and(&self, other: &Uint256) -> Uint256 {
+    let &Uint256(ref arr1) = self;
+    let &Uint256(ref arr2) = other;
+    Uint256([arr1[0] & arr2[0],
+             arr1[1] & arr2[1],
+             arr1[2] & arr2[2],
+             arr1[3] & arr2[3]])
+  }
+
+  /// Bitwise xor
+  pub fn xor(&self, other: &Uint256) -> Uint256 {
+    let &Uint256(ref arr1) = self;
+    let &Uint256(ref arr2) = other;
+    Uint256([arr1[0] ^ arr2[0],
+             arr1[1] ^ arr2[1],
+             arr1[2] ^ arr2[2],
+             arr1[3] ^ arr2[3]])
+  }
+
+  /// Trailing zeros
+  pub fn trailing_zeros(&self) -> uint {
+    let &Uint256(ref arr) = self;
+    if arr[0] > 0 { return arr[0].trailing_zeros() as uint; }
+    if arr[1] > 0 { return 0x40 + arr[1].trailing_zeros() as uint; }
+    if arr[2] > 0 { return 0x80 + arr[2].trailing_zeros() as uint; }
+    0xC0 + arr[3].trailing_zeros() as uint
+  }
+}
+
+impl Add<Uint256,Uint256> for Uint256 {
+  fn add(&self, other: &Uint256) -> Uint256 {
+    let &Uint256(ref me) = self;
+    let &Uint256(ref you) = other;
+    let mut ret = [0u64, 0, 0, 0];
+    let mut carry = [0u64, 0, 0, 0];
+    let mut b_carry = false;
+    for i in range(0u, 4) {
+      ret[i] = me[i] + you[i];
+      if i < 3 && ret[i] < me[i] {
+        carry[i + 1] = 1;
+        b_carry = true;
+      }
+    }
+    if b_carry { Uint256(ret).add(&Uint256(carry)) } else { Uint256(ret) }
+  }
+}
+
+impl Zero for Uint256 {
+  fn zero() -> Uint256 { Uint256::from_u64(0) }
+  fn is_zero(&self) -> bool {
+    let &Uint256(ref arr) = self;
+    arr[0] == 0 && arr[1] == 0 && arr[2] == 0 && arr[3] == 0
   }
 }
 
@@ -314,6 +370,21 @@ mod tests {
     let div = mult.div(&Uint256::from_u64(300));
     assert_eq!(div, Uint256([0x9F30411021524112u64, 0x0001BD5B7DDFBD5A, 0, 0]));
     // TODO: bit inversion
+  }
+
+  #[test]
+  pub fn uint256_extreme_bitshift_test() {
+    // Shifting a u64 by 64 bits gives an undefined value, so make sure that
+    // we're doing the Right Thing here
+    let init = Uint256::from_u64(0xDEADBEEFDEADBEEF);
+
+    assert_eq!(init.shl(64), Uint256([0, 0xDEADBEEFDEADBEEF, 0, 0]));
+    let add = init.shl(64).add(&init);
+    assert_eq!(add, Uint256([0xDEADBEEFDEADBEEF, 0xDEADBEEFDEADBEEF, 0, 0]));
+    assert_eq!(add.shr(0), Uint256([0xDEADBEEFDEADBEEF, 0xDEADBEEFDEADBEEF, 0, 0]));
+    assert_eq!(add.shl(0), Uint256([0xDEADBEEFDEADBEEF, 0xDEADBEEFDEADBEEF, 0, 0]));
+    assert_eq!(add.shr(64), Uint256([0xDEADBEEFDEADBEEF, 0, 0, 0]));
+    assert_eq!(add.shl(64), Uint256([0, 0xDEADBEEFDEADBEEF, 0xDEADBEEFDEADBEEF, 0]));
   }
 
   #[test]
