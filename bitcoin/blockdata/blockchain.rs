@@ -205,13 +205,18 @@ impl<'tree> Iterator<Sha256dHash> for LocatorHashIter<'tree> {
   fn next(&mut self) -> Option<Sha256dHash> {
     let ret = match self.index {
       Some(ref node) => Some(node.hash()),
-      None => None
+      None => { return None; }
     };
 
-    for _ in range(0, self.skip) {
-      self.index = match self.index {
-        Some(ref rc) => rc.prev(self.tree),
-        None => { break; }
+    // Rewind once (if we are at the genesis, this will set self.index to None)
+    self.index = self.index.get_ref().prev(self.tree);
+    // If we are not at the genesis, rewind `self.skip` times, or until we are.
+    if self.index.is_some() {
+      for _ in range(1, self.skip) {
+        self.index = match self.index.get_ref().prev(self.tree) {
+          Some(rc) => Some(rc),
+          None => { break; }
+        }
       }
     }
 
@@ -346,6 +351,13 @@ impl Blockchain {
       if hash == chain.best_hash { return Some(&chain.best_tip); }
       chain.tree.lookup(&hash.as_uint256(), 256)
     }
+    // Check for multiple inserts (bitcoind from c9a09183 to 3c85d2ec doesn't
+    // handle locator hashes properly and may return blocks multiple times,
+    // and this may also happen in case of a reorg.
+    if self.tree.lookup(&block.header.hash().as_uint256(), 256).is_some() {
+      println!("Warning: tried to add block {} twice!", block.header.hash());
+      return true;
+    }
     // Construct node, if possible
     let rc_block = match get_prev(self, block.header.prev_blockhash) {
       Some(prev) => {
@@ -400,8 +412,6 @@ impl Blockchain {
       return false;
     }
 
-    // Insert the new block
-    self.tree.insert(&rc_block.block.header.hash().as_uint256(), 256, rc_block.clone());
     // Replace the best tip if necessary
     if rc_block.total_work > self.best_tip.total_work {
       self.set_best_tip(rc_block);

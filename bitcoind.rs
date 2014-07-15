@@ -135,21 +135,25 @@ impl Bitcoind {
                   GetHeadersMessage::new(idle_state.blockchain.locator_hashes(),
                                          zero_hash()))));
             // Loop through received headers
-            with_next_message!(idle_state.net_chan.recv(),
-              message::Headers(headers) => {
-                for lone_header in headers.iter() {
-                  if !idle_state.blockchain.add_header(lone_header.header) {
-                     println!("Headers sync: failed to add {} to chain", lone_header.header.hash());
+            let mut received_headers = false;
+            while !received_headers {
+              with_next_message!(idle_state.net_chan.recv(),
+                message::Headers(headers) => {
+                  for lone_header in headers.iter() {
+                    if !idle_state.blockchain.add_header(lone_header.header) {
+                       println!("Headers sync: failed to add {} to chain", lone_header.header.hash());
+                    }
                   }
+                  received_headers = true;
+                  // We are done if this `headers` message did not update our status
+                  done = headers.len() == 0;
                 }
-                // We are done if this `headers` message did not update our status
-                done = headers.len() == 0;
-              }
-              message::Ping(nonce) => {
-                consume_err("Warning: failed to send pong in response to ping",
-                  idle_state.sock.send_message(message::Pong(nonce)));
-              }
-            );
+                message::Ping(nonce) => {
+                  consume_err("Warning: failed to send pong in response to ping",
+                    idle_state.sock.send_message(message::Pong(nonce)));
+                }
+              );
+            }
           }
           println!("Done sync.");
           SyncUtxoSet(idle_state, Vec::with_capacity(UTXO_SYNC_N_BLOCKS))

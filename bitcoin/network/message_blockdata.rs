@@ -94,7 +94,7 @@ impl GetHeadersMessage {
   pub fn new(locator_hashes: Vec<Sha256dHash>, stop_hash: Sha256dHash) -> GetHeadersMessage {
     GetHeadersMessage {
       version: constants::PROTOCOL_VERSION,
-      locator_hashes: locator_hashes.clone(),
+      locator_hashes: locator_hashes,
       stop_hash: stop_hash
     }
   }

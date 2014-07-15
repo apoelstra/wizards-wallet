@@ -33,12 +33,21 @@ pub struct Uint256(pub [u64, ..4]);
 
 impl Uint256 {
   /// Constructor
+  #[inline]
   pub fn from_u64(init: u64) -> Uint256 {
     let val = [init, 0, 0, 0];
     Uint256(val)
   }
 
+  /// Conversion to u64
+  #[inline]
+  pub fn low_u64(&self) -> u64 {
+    let &Uint256(ref arr) = self;
+    arr[0]
+  }
+
   /// Return the least number of bits needed to represent the number
+  #[inline]
   pub fn bits(&self) -> uint {
     let &Uint256(ref arr) = self;
     if arr[3] > 0 { return 256 - unsafe { intrinsics::ctlz64(arr[3]) } as uint; }
@@ -48,6 +57,7 @@ impl Uint256 {
   }
 
   /// Is bit set?
+  #[inline]
   pub fn bit_value(&self, index: uint) -> bool {
     let &Uint256(ref arr) = self;
     arr[index / 64] & (1 << (index % 64)) != 0
@@ -93,6 +103,7 @@ impl Uint256 {
   }
 
   /// Negate
+  #[inline]
   #[allow(unsigned_negate)]
   pub fn bit_inv(&mut self) {
     let &Uint256(ref mut arr) = self;
@@ -102,6 +113,7 @@ impl Uint256 {
   }
 
   /// Subtract
+  #[inline]
   pub fn sub(&self, other: &Uint256) -> Uint256 {
     let mut you = *other;
     you.bit_inv();
@@ -143,6 +155,7 @@ impl Uint256 {
   }
 
   /// Increment by 1
+  #[inline]
   pub fn increment(&mut self) {
     let &Uint256(ref mut arr) = self;
     arr[0] += 1;
@@ -174,6 +187,7 @@ impl Uint256 {
   }
 
   /// Bitwise and with `n` ones
+  #[inline]
   pub fn mask(&self, n: uint) -> Uint256 {
     let &Uint256(ref arr) = self;
     match n {
@@ -186,11 +200,13 @@ impl Uint256 {
   }
 
   /// Returns a number which is just the bits from start to end
+  #[inline]
   pub fn bit_slice(&self, start: uint, end: uint) -> Uint256 {
     self.shr(start).mask(end - start)
   }
 
   /// Bitwise and
+  #[inline]
   pub fn and(&self, other: &Uint256) -> Uint256 {
     let &Uint256(ref arr1) = self;
     let &Uint256(ref arr2) = other;
@@ -201,6 +217,7 @@ impl Uint256 {
   }
 
   /// Bitwise xor
+  #[inline]
   pub fn xor(&self, other: &Uint256) -> Uint256 {
     let &Uint256(ref arr1) = self;
     let &Uint256(ref arr2) = other;
@@ -211,6 +228,7 @@ impl Uint256 {
   }
 
   /// Trailing zeros
+  #[inline]
   pub fn trailing_zeros(&self) -> uint {
     let &Uint256(ref arr) = self;
     if arr[0] > 0 { return arr[0].trailing_zeros() as uint; }
