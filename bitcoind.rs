@@ -183,7 +183,7 @@ impl Bitcoind {
               while block_count < UTXO_SYNC_N_BLOCKS {
                 with_next_message!(idle_state.net_chan.recv(),
                   message::Block(block) => {
-                    recv_data.insert(&block.header.hash().as_uint256(), 256, block);
+                    recv_data.insert(&block.header.hash().as_uint128(), 128, block);
                     block_count += 1;
                   }
                   message::NotFound(_) => {
@@ -198,7 +198,7 @@ impl Bitcoind {
                 )
               }
               for recv_inv in cache.iter() {
-                let block_opt = recv_data.lookup(&recv_inv.hash.as_uint256(), 256);
+                let block_opt = recv_data.lookup(&recv_inv.hash.as_uint128(), 128);
                 match block_opt {
                   Some(block) => {
                     if !idle_state.utxo_set.update(block) {

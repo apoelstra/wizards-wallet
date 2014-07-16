@@ -19,13 +19,15 @@
 //! single transaction
 //!
 
+use std::num::from_u64;
+
 use blockdata::opcodes;
 use blockdata::script::Script;
 use blockdata::transaction::{Transaction, TxOut, TxIn};
 use blockdata::block::{Block, BlockHeader};
 use util::misc::hex_bytes;
 use util::hash::{merkle_root, zero_hash};
-use util::uint256::Uint256;
+use util::uint::Uint256;
 
 pub static MAX_SEQUENCE: u32 = 0xFFFFFFFF;
 pub static COIN_VALUE: u64 = 100000000;
@@ -34,7 +36,7 @@ pub static DIFFCHANGE_TIMESPAN: u32 = 14 * 24 * 3600;
 
 /// In Bitcoind this is insanely described as ~((u256)0 >> 32)
 pub fn max_target() -> Uint256 {
-  Uint256::from_u64(0xFFFF).shl(208)
+  from_u64::<Uint256>(0xFFFF).unwrap() << 208u
 }
 
 /// Constructs and returns the coinbase (and only) transaction of the genesis block

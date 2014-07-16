@@ -27,7 +27,8 @@ use crypto::sha2;
 
 use network::serialize::Serializable;
 use util::iter::FixedTakeable;
-use util::uint256::Uint256;
+use util::uint::Uint128;
+use util::uint::Uint256;
 
 /// A Bitcoin hash, 32-bytes, computed from x as SHA256(SHA256(x))
 pub struct Sha256dHash([u8, ..32]);
@@ -63,6 +64,15 @@ impl Sha256dHash {
   pub fn as_uint256(&self) -> Uint256 {
     let &Sha256dHash(data) = self;
     unsafe { Uint256(transmute(data)) }
+  }
+
+  /// Converts a hash to a Uint128, interpreting it as a little endian encoding.
+  pub fn as_uint128(&self) -> Uint128 {
+    let &Sha256dHash(data) = self;
+    unsafe { Uint128(transmute([data[16], data[17], data[18], data[19], data[20],
+                                data[21], data[22], data[23], data[24], data[25],
+                                data[26], data[27], data[28], data[29], data[30],
+                                data[31]])) }
   }
 }
 

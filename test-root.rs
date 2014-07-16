@@ -30,6 +30,8 @@
 #![license = "CC0"]
 
 // Experimental features we need
+#![feature(macro_rules)]
+#![feature(phase)]
 #![feature(globs)]
 
 // Coding conventions
@@ -46,5 +48,6 @@ extern crate time;
 #[phase(plugin,link)] extern crate bitcoin;
 
 mod bitcoind;
+mod constants;
 mod user_data;
 

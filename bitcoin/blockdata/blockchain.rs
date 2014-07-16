@@ -25,12 +25,14 @@
 use alloc::rc::Rc;
 use std::cell::{Ref, RefCell};
 use std::io::{IoResult, IoError, OtherIoError};
+use std::num::Zero;
 
 use blockdata::block::{Block, BlockHeader};
 use blockdata::transaction::Transaction;
 use blockdata::constants::{DIFFCHANGE_INTERVAL, DIFFCHANGE_TIMESPAN, max_target};
 use network::serialize::{Serializable, SerializeIter};
-use util::uint256::Uint256;
+use util::BitArray;
+use util::uint::Uint256;
 use util::hash::Sha256dHash;
 use util::misc::prepend_err;
 use util::patricia_tree::PatriciaTree;
@@ -56,7 +58,7 @@ pub struct BlockchainNode {
 
 impl BlockchainNode {
   /// Look up the previous link, caching the result
-  fn prev(&self, tree: &PatriciaTree<Rc<BlockchainNode>>) -> Option<Rc<BlockchainNode>> {
+  fn prev(&self, tree: &PatriciaTree<Rc<BlockchainNode>, Uint256>) -> Option<Rc<BlockchainNode>> {
     let mut cache = self.prev.borrow_mut();
     if cache.is_some() {
       return Some(cache.get_ref().clone())
@@ -112,7 +114,7 @@ impl Serializable for Rc<BlockchainNode> {
 
 /// The blockchain
 pub struct Blockchain {
-  tree: PatriciaTree<Rc<BlockchainNode>>,
+  tree: PatriciaTree<Rc<BlockchainNode>, Uint256>,
   best_tip: Rc<BlockchainNode>,
   best_hash: Sha256dHash,
   genesis_hash: Sha256dHash
@@ -139,7 +141,7 @@ impl Serializable for Blockchain {
   }
 
   fn deserialize<I: Iterator<u8>>(mut iter: I) -> IoResult<Blockchain> {
-    let tree: PatriciaTree<Rc<BlockchainNode>> = try!(prepend_err("tree", Serializable::deserialize(iter.by_ref())));
+    let tree: PatriciaTree<Rc<BlockchainNode>, Uint256> = try!(prepend_err("tree", Serializable::deserialize(iter.by_ref())));
     let best_hash: Sha256dHash = try!(prepend_err("best_hash", Serializable::deserialize(iter.by_ref())));
     let genesis_hash: Sha256dHash = try!(prepend_err("genesis_hash", Serializable::deserialize(iter.by_ref())));
     // Lookup best tip
@@ -190,13 +192,13 @@ impl Serializable for Blockchain {
 
 struct LocatorHashIter<'tree> {
   index: Option<Rc<BlockchainNode>>,
-  tree: &'tree PatriciaTree<Rc<BlockchainNode>>,
+  tree: &'tree PatriciaTree<Rc<BlockchainNode>, Uint256>,
   count: uint,
   skip: uint
 }
 
 impl<'tree> LocatorHashIter<'tree> {
-  fn new<'tree>(init: Rc<BlockchainNode>, tree: &'tree PatriciaTree<Rc<BlockchainNode>>) -> LocatorHashIter<'tree> {
+  fn new<'tree>(init: Rc<BlockchainNode>, tree: &'tree PatriciaTree<Rc<BlockchainNode>, Uint256>) -> LocatorHashIter<'tree> {
     LocatorHashIter { index: Some(init), tree: tree, count: 0, skip: 1 }
   }
 }
@@ -258,12 +260,12 @@ impl<'tree> Iterator<&'tree BlockchainNode> for BlockIter<'tree> {
 fn satoshi_the_precision(n: &Uint256) -> Uint256 {
   // Shift by B bits right then left to turn the low bits to zero
   let bits = 8 * ((n.bits() + 7) / 8 - 3);
-  let mut ret = n.shr(bits);
+  let mut ret = n >> bits;
   // Oh, did I say B was that fucked up formula? I meant sometimes also + 8.
-  if ret.bit_value(23) {
-    ret = ret.shr(8).shl(8);
+  if ret.bit(23) {
+    ret = (ret >> 8) << 8;
   }
-  ret.shl(bits)
+  ret << bits
 }
 
 impl Blockchain {
@@ -271,7 +273,7 @@ impl Blockchain {
   pub fn new(genesis: Block) -> Blockchain {
     let genhash = genesis.header.hash();
     let rc_gen = Rc::new(BlockchainNode {
-      total_work: Uint256::from_u64(0),
+      total_work: Zero::zero(),
       required_difficulty: genesis.header.target(),
       block: genesis,
       height: 0,
@@ -378,7 +380,7 @@ impl Blockchain {
             // Compute new target
             let mut target = prev.block.header.target();
             target = target.mul_u32(timespan);
-            target = target.div(&Uint256::from_u64(DIFFCHANGE_TIMESPAN as u64));
+            target = target / FromPrimitive::from_u64(DIFFCHANGE_TIMESPAN as u64).unwrap();
             // Clamp below MAX_TARGET (difficulty 1)
             let max = max_target();
             if target > max { target = max };

@@ -23,25 +23,25 @@
 use core::fmt::Show;
 use core::iter::ByRef;
 use core::cmp;
-use std::num::Zero;
+use std::num::{Zero, One};
 use std::io::{IoResult, InvalidInput, standard_error};
 
 use network::serialize::{Serializable, SerializeIter};
-use util::uint256::Uint256;
+use util::BitArray;
 use util::misc::prepend_err;
 
 /// Patricia troo
-pub struct PatriciaTree<T> {
+pub struct PatriciaTree<T, K> {
   data: Option<T>,
-  child_l: Option<Box<PatriciaTree<T>>>,
-  child_r: Option<Box<PatriciaTree<T>>>,
-  skip_prefix: Uint256,
+  child_l: Option<Box<PatriciaTree<T, K>>>,
+  child_r: Option<Box<PatriciaTree<T, K>>>,
+  skip_prefix: K,
   skip_len: u8
 }
 
-impl<T> PatriciaTree<T> {
+impl<T, K:BitArray+Eq+Zero+One+BitXor<K,K>+Shl<uint,K>+Shr<uint,K>> PatriciaTree<T, K> {
   /// Constructs a new Patricia tree
-  pub fn new() -> PatriciaTree<T> {
+  pub fn new() -> PatriciaTree<T, K> {
     PatriciaTree {
       data: None,
       child_l: None,
@@ -52,7 +52,7 @@ impl<T> PatriciaTree<T> {
   }
 
   /// Lookup a value by exactly matching `key` and return a referenc
-  pub fn lookup_mut<'a>(&'a mut self, key: &Uint256, key_len: uint) -> Option<&'a mut T> {
+  pub fn lookup_mut<'a>(&'a mut self, key: &K, key_len: uint) -> Option<&'a mut T> {
     // Caution: `lookup_mut` never modifies its self parameter (in fact its
     // internal recursion uses a non-mutable self, so we are OK to just
     // transmute our self pointer into a mutable self before passing it in.
@@ -61,7 +61,7 @@ impl<T> PatriciaTree<T> {
   }
 
   /// Lookup a value by exactly matching `key` and return a mutable reference
-  pub fn lookup<'a>(&'a self, key: &Uint256, key_len: uint) -> Option<&'a T> {
+  pub fn lookup<'a>(&'a self, key: &K, key_len: uint) -> Option<&'a T> {
     let mut node = self;
     let mut key_idx = 0;
 
@@ -83,7 +83,7 @@ impl<T> PatriciaTree<T> {
       } else {
         // Key matches prefix: search key longer than node key, recurse
         key_idx += 1 + node.skip_len as uint;
-        let subtree = if key.bit_value(key_idx - 1) { &node.child_r } else { &node.child_l };
+        let subtree = if key.bit(key_idx - 1) { &node.child_r } else { &node.child_l };
         match subtree {
           &Some(ref bx) => {
             node = &**bx;  // bx is a &Box<U> here, so &**bx gets &U
@@ -96,7 +96,7 @@ impl<T> PatriciaTree<T> {
 
   /// Inserts a value with key `key`, returning true on success. If a value is already
   /// stored against `key`, do nothing and return false.
-  pub fn insert(&mut self, key: &Uint256, key_len: uint, value: T) -> bool {
+  pub fn insert(&mut self, key: &K, key_len: uint, value: T) -> bool {
     let mut node = self;
     let mut idx = 0;
     loop {
@@ -107,14 +107,14 @@ impl<T> PatriciaTree<T> {
 
       // Prefixes do not match: split key
       if masked_prefix != key_slice {
-        let diff = masked_prefix.xor(&key_slice).trailing_zeros();
+        let diff = (masked_prefix ^ key_slice).trailing_zeros();
 
         // Remove the old node's children
         let child_l = node.child_l.take();
         let child_r = node.child_r.take();
         let value_neighbor = node.data.take();
         let tmp = node;  // borrowck hack
-        let (insert, neighbor) = if key_slice.bit_value(diff)
+        let (insert, neighbor) = if key_slice.bit(diff)
                                       { (&mut tmp.child_r, &mut tmp.child_l) }
                                  else { (&mut tmp.child_l, &mut tmp.child_r) };
         *insert = Some(box PatriciaTree {
@@ -128,7 +128,7 @@ impl<T> PatriciaTree<T> {
           data: value_neighbor,
           child_l: child_l,
           child_r: child_r,
-          skip_prefix: tmp.skip_prefix.shr(diff + 1),
+          skip_prefix: tmp.skip_prefix >> (diff + 1),
           skip_len: tmp.skip_len - diff as u8 - 1
         });
         // Chop the prefix down
@@ -149,13 +149,13 @@ impl<T> PatriciaTree<T> {
           let child_r = node.child_r.take();
           let value_neighbor = node.data.take();
           // Put the old data in a new child, with the remainder of the prefix
-          let new_child = if node.skip_prefix.bit_value(slice_len)
+          let new_child = if node.skip_prefix.bit(slice_len)
                             { &mut node.child_r } else { &mut node.child_l };
           *new_child = Some(box PatriciaTree {
             data: value_neighbor,
             child_l: child_l,
             child_r: child_r,
-            skip_prefix: node.skip_prefix.shr(slice_len + 1),
+            skip_prefix: node.skip_prefix >> (slice_len + 1),
             skip_len: node.skip_len - slice_len as u8 - 1
           });
           // Chop the prefix down and put the new data in place
@@ -176,7 +176,7 @@ impl<T> PatriciaTree<T> {
         else {
           let tmp = node;  // hack to appease borrowck
           idx += tmp.skip_len as uint + 1;
-          let subtree = if key.bit_value(idx - 1)
+          let subtree = if key.bit(idx - 1)
                           { &mut tmp.child_r } else { &mut tmp.child_l };
           // Recurse, adding a new node if necessary
           if subtree.is_none() {
@@ -197,10 +197,10 @@ impl<T> PatriciaTree<T> {
 
   /// Deletes a value with key `key`, returning it on success. If no value with
   /// the given key is found, return None
-  pub fn delete(&mut self, key: &Uint256, key_len: uint) -> Option<T> {
+  pub fn delete(&mut self, key: &K, key_len: uint) -> Option<T> {
     /// Return value is (deletable, actual return value), where `deletable` is true
     /// is true when the entire node can be deleted (i.e. it has no children)
-    fn recurse<T>(tree: &mut PatriciaTree<T>, key: Uint256, key_len: uint) -> (bool, Option<T>) {
+    fn recurse<T, K:BitArray+Eq+Zero+One+Add<K,K>+Shr<uint,K>+Shl<uint,K>>(tree: &mut PatriciaTree<T, K>, key: &K, key_len: uint) -> (bool, Option<T>) {
       // If the search key is shorter than the node prefix, there is no
       // way we can match, so fail.
       if key_len < tree.skip_len as uint {
@@ -228,10 +228,12 @@ impl<T> PatriciaTree<T> {
             tree.data = consolidate.data;
             tree.child_l = consolidate.child_l;
             tree.child_r = consolidate.child_r;
-            let new_bit = if bit { Uint256::from_u64(1).shl(tree.skip_len as uint) }
-                          else { Zero::zero() };
-            tree.skip_prefix = tree.skip_prefix.add(&new_bit)
-                                               .add(&consolidate.skip_prefix.shl(1 + tree.skip_len as uint));
+            let new_bit = if bit { let ret: K = One::one();
+                                   ret << (tree.skip_len as uint) }
+                          else   { Zero::zero() };
+            tree.skip_prefix = tree.skip_prefix + 
+                                 new_bit +
+                                 (consolidate.skip_prefix << (1 + tree.skip_len as uint));
             tree.skip_len += 1 + consolidate.skip_len;
             return (false, ret);
           }
@@ -241,7 +243,7 @@ impl<T> PatriciaTree<T> {
       }
 
       // Otherwise, the key is longer than the prefix and we need to recurse
-      let next_bit = key.bit_value(tree.skip_len as uint);
+      let next_bit = key.bit(tree.skip_len as uint);
       // Recursively get the return value. This awkward scope is required
       // to shorten the time we mutably borrow the node's children -- we
       // might want to borrow the sibling later, so the borrow needs to end.
@@ -254,7 +256,7 @@ impl<T> PatriciaTree<T> {
         }
         // Otherwise, do it
         let (delete_child, ret) = recurse(&mut **target.get_mut_ref(),
-                                          key.shr(tree.skip_len as uint + 1),
+                                          &key.shr(&(tree.skip_len as uint + 1)),
                                           key_len - tree.skip_len as uint - 1);
         if delete_child {
           target.take();
@@ -283,10 +285,12 @@ impl<T> PatriciaTree<T> {
           tree.data = consolidate.data;
           tree.child_l = consolidate.child_l;
           tree.child_r = consolidate.child_r;
-          let new_bit = if bit { Uint256::from_u64(1).shl(tree.skip_len as uint) }
+          let new_bit = if bit { let ret: K = One::one();
+                                 ret << (tree.skip_len as uint) }
                         else { Zero::zero() };
-          tree.skip_prefix = tree.skip_prefix.add(&new_bit)
-                                             .add(&consolidate.skip_prefix.shl(1 + tree.skip_len as uint));
+          tree.skip_prefix = tree.skip_prefix + 
+                               new_bit +
+                               (consolidate.skip_prefix << (1 + tree.skip_len as uint));
           tree.skip_len += 1 + consolidate.skip_len;
           return (false, ret);
         }
@@ -296,13 +300,13 @@ impl<T> PatriciaTree<T> {
         }
       }
     }
-    let (_, ret) = recurse(self, *key, key_len);
+    let (_, ret) = recurse(self, key, key_len);
     ret
   }
 
   /// Count all the nodes
   pub fn node_count(&self) -> uint {
-    fn recurse<T>(node: &Option<Box<PatriciaTree<T>>>) -> uint {
+    fn recurse<T, K>(node: &Option<Box<PatriciaTree<T, K>>>) -> uint {
       match node {
         &Some(ref node) => { 1 + recurse(&node.child_l) + recurse(&node.child_r) }
         &None => 0
@@ -312,12 +316,12 @@ impl<T> PatriciaTree<T> {
   }
 }
 
-impl<T:Show> PatriciaTree<T> {
+impl<T:Show, K:BitArray> PatriciaTree<T, K> {
   /// Print the entire tree
   pub fn print<'a>(&'a self) {
-    fn recurse<'a, T:Show>(tree: &'a PatriciaTree<T>, depth: uint) {
+    fn recurse<'a, T:Show, K:BitArray>(tree: &'a PatriciaTree<T, K>, depth: uint) {
       for i in range(0, tree.skip_len as uint) {
-        print!("{:}", if tree.skip_prefix.bit_value(i) { 1u } else { 0 });
+        print!("{:}", if tree.skip_prefix.bit(i) { 1u } else { 0 });
       }
       println!(": {:}", tree.data);
       // left gets no indentation
@@ -347,7 +351,7 @@ impl<T:Show> PatriciaTree<T> {
   }
 }
 
-impl<T:Serializable+'static> Serializable for PatriciaTree<T> {
+impl<T:Serializable+'static, K:BitArray+Serializable+'static> Serializable for PatriciaTree<T, K> {
   fn serialize(&self) -> Vec<u8> {
     // Depth-first serialization
     let mut ret = vec![];
@@ -373,10 +377,10 @@ impl<T:Serializable+'static> Serializable for PatriciaTree<T> {
     }
   }
 
-  fn deserialize<I: Iterator<u8>>(mut iter: I) -> IoResult<PatriciaTree<T>> {
+  fn deserialize<I: Iterator<u8>>(mut iter: I) -> IoResult<PatriciaTree<T, K>> {
     // This goofy deserialization routine is to prevent an infinite
     // regress of ByRef<ByRef<...<ByRef<I>>...>>, see #15188
-    fn recurse<T:Serializable, I: Iterator<u8>>(iter: &mut ByRef<I>) -> IoResult<PatriciaTree<T>> {
+    fn recurse<T:Serializable, K:Serializable, I: Iterator<u8>>(iter: &mut ByRef<I>) -> IoResult<PatriciaTree<T, K>> {
       Ok(PatriciaTree {
         skip_prefix: try!(prepend_err("skip_prefix", Serializable::deserialize(iter.by_ref()))),
         skip_len: try!(prepend_err("skip_len", Serializable::deserialize(iter.by_ref()))),
@@ -404,14 +408,15 @@ mod tests {
   use std::num::Zero;
 
   use util::hash::Sha256dHash;
-  use util::uint256::Uint256;
+  use util::uint::Uint128;
+  use util::uint::Uint256;
   use util::patricia_tree::PatriciaTree;
   use network::serialize::Serializable;
 
   #[test]
   fn patricia_single_insert_lookup_delete_test() {
-    let mut key = Uint256::from_u64(0xDEADBEEFDEADBEEF);
-    key = key.shl(64).add(&key);
+    let mut key: Uint256 = FromPrimitive::from_u64(0xDEADBEEFDEADBEEF).unwrap();
+    key = key + (key << 64);
 
     let mut tree = PatriciaTree::new();
     tree.insert(&key, 100, 100u32);
@@ -428,7 +433,7 @@ mod tests {
     let mut tree = PatriciaTree::new();
     let mut hashes = vec![];
     for i in range(0u32, 5000) {
-      let hash = Sha256dHash::from_data(&[(i / 0x100) as u8, (i % 0x100) as u8]).as_uint256();
+      let hash = Sha256dHash::from_data(&[(i / 0x100) as u8, (i % 0x100) as u8]).as_uint128();
       tree.insert(&hash, 250, i);
       hashes.push(hash);
     }
@@ -469,8 +474,8 @@ mod tests {
     let mut hashes = vec![];
     // Start by inserting a bunch of chunder
     for i in range(1u32, 500) {
-      let hash = Sha256dHash::from_data(&[(i / 0x100) as u8, (i % 0x100) as u8]).as_uint256();
-      tree.insert(&hash, 256, i * 1000);
+      let hash = Sha256dHash::from_data(&[(i / 0x100) as u8, (i % 0x100) as u8]).as_uint128();
+      tree.insert(&hash, 128, i * 1000);
       hashes.push(hash);
     }
     // Do the actual test -- note that we also test insertion and deletion
@@ -489,7 +494,7 @@ mod tests {
     // Check that the chunder was unharmed
     for (n, hash) in hashes.iter().enumerate() {
       let ii = ((n + 1) * 1000) as u32;
-      let ret = tree.lookup(hash, 256);
+      let ret = tree.lookup(hash, 128);
       assert_eq!(ret, Some(&ii));
     }
   }
@@ -500,7 +505,7 @@ mod tests {
     let mut tree = PatriciaTree::new();
     let mut hashes = vec![];
     for i in range(0u32, 5000) {
-      let hash = Sha256dHash::from_data(&[(i / 0x100) as u8, (i % 0x100) as u8]).as_uint256();
+      let hash = Sha256dHash::from_data(&[(i / 0x100) as u8, (i % 0x100) as u8]).as_uint128();
       tree.insert(&hash, 250, i);
       hashes.push(hash);
     }
@@ -511,7 +516,7 @@ mod tests {
     let serialized_1 = tree.serialize_iter().collect();
     assert_eq!(serialized, serialized_1);
     // Deserialize it
-    let deserialized: IoResult<PatriciaTree<u32>> = Serializable::deserialize(serialized.iter().map(|n| *n));
+    let deserialized: IoResult<PatriciaTree<u32, Uint128>> = Serializable::deserialize(serialized.iter().map(|n| *n));
     assert!(deserialized.is_ok());
     let new_tree = deserialized.unwrap();
 

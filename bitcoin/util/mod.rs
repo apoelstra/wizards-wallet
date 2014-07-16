@@ -20,5 +20,21 @@ pub mod hash;
 pub mod iter;
 pub mod misc;
 pub mod patricia_tree;
-pub mod uint256;
+pub mod uint;
+
+/// A trait which allows numbers to act as fixed-size bit arrays
+pub trait BitArray {
+  /// Is bit set?
+  fn bit(&self, idx: uint) -> bool;
+
+  /// Returns an array which is just the bits from start to end
+  fn bit_slice(&self, start: uint, end: uint) -> Self;
+
+  /// Bitwise and with `n` ones
+  fn mask(&self, n: uint) -> Self;
+
+  /// Trailing zeros
+  fn trailing_zeros(&self) -> uint;
+}
+
 

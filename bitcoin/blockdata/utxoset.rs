@@ -24,17 +24,19 @@ use blockdata::transaction::{Transaction, TxOut};
 use blockdata::block::Block;
 use network::serialize::{Serializable, SerializeIter};
 use util::hash::Sha256dHash;
+use util::uint::Uint128;
 use util::patricia_tree::PatriciaTree;
 
 /// How much of the hash to use as a key
-static KEY_LEN: uint = 120;
+static KEY_LEN: uint = 128;
 
 /// Vector of outputs; None indicates a nonexistent or already spent output
-type UtxoNode = Vec<Option<TxOut>>;
+type UtxoNode = Vec<Option<Box<TxOut>>>;
 
 /// The UTXO set
 pub struct UtxoSet {
-  tree: PatriciaTree<UtxoNode>,
+  // We use a 128-bit indexed tree to save memory
+  tree: PatriciaTree<UtxoNode, Uint128>,
   last_hash: Sha256dHash,
   n_utxos: u64
 }
@@ -56,14 +58,15 @@ impl UtxoSet {
   }
 
   /// Add a new UTXO to the set
+  #[cfg(test)]
   fn add_utxo(&mut self, txo: TxOut, txid: Sha256dHash, vout: u32) -> bool {
-    let txid = txid.as_uint256();
+    let txid = txid.as_uint128();
     // Locate node if it's already there
     {
       match self.tree.lookup_mut(&txid, KEY_LEN) {
         Some(node) => {
           // Insert the output
-          node.grow_set(vout as uint, &None, Some(txo));
+          node.grow_set(vout as uint, &None, Some(box txo));
           // Return success
           return true;
         }
@@ -72,7 +75,7 @@ impl UtxoSet {
     }
     // If we haven't returned yet, the node wasn't there. So insert it.
     let mut new_node = vec![];
-    new_node.grow_set(vout as uint, &None, Some(txo));
+    new_node.grow_set(vout as uint, &None, Some(box txo));
     self.tree.insert(&txid, KEY_LEN, new_node);
     // Return success
     return true;
@@ -83,12 +86,12 @@ impl UtxoSet {
     let txid = tx.hash();
     // Locate node if it's already there
     {
-      match self.tree.lookup_mut(&txid.as_uint256(), KEY_LEN) {
+      match self.tree.lookup_mut(&txid.as_uint128(), KEY_LEN) {
         Some(node) => {
           node.reserve(tx.output.len());
           // Insert the output
           for (vout, txo) in tx.output.iter().enumerate() {
-            node.grow_set(vout as uint, &None, Some(txo.clone()));
+            node.grow_set(vout as uint, &None, Some(box txo.clone()));
           }
           // Return success
           return true;
@@ -100,19 +103,19 @@ impl UtxoSet {
     let mut new_node = Vec::with_capacity(tx.output.len());
     self.n_utxos += tx.output.len() as u64;
     for (vout, txo) in tx.output.iter().enumerate() {
-      new_node.grow_set(vout as uint, &None, Some(txo.clone()));
+      new_node.grow_set(vout as uint, &None, Some(box txo.clone()));
     }
-    self.tree.insert(&txid.as_uint256(), KEY_LEN, new_node);
+    self.tree.insert(&txid.as_uint128(), KEY_LEN, new_node);
     // Return success
     return true;
   }
 
   /// Remove a UTXO from the set and return it
-  fn take_utxo(&mut self, txid: Sha256dHash, vout: u32) -> Option<TxOut> {
+  fn take_utxo(&mut self, txid: Sha256dHash, vout: u32) -> Option<Box<TxOut>> {
     // This whole function has awkward scoping thx to lexical borrow scoping :(
     let (ret, should_delete) = {
       // Locate the UTXO, failing if not found
-      let node = match self.tree.lookup_mut(&txid.as_uint256(), KEY_LEN) {
+      let node = match self.tree.lookup_mut(&txid.as_uint128(), KEY_LEN) {
         Some(node) => node,
         None => return None
       };
@@ -130,7 +133,7 @@ impl UtxoSet {
 
     // Delete the whole node if it is no longer being used
     if should_delete {
-      self.tree.delete(&txid.as_uint256(), KEY_LEN);
+      self.tree.delete(&txid.as_uint128(), KEY_LEN);
     }
 
     self.n_utxos -= if ret.is_some() { 1 } else { 0 };
@@ -138,9 +141,9 @@ impl UtxoSet {
   }
 
   /// Determine whether a UTXO is in the set
-  fn get_utxo<'a>(&'a mut self, txid: Sha256dHash, vout: u32) -> Option<&'a TxOut> {
+  fn get_utxo<'a>(&'a mut self, txid: Sha256dHash, vout: u32) -> Option<&'a Box<TxOut>> {
     // Locate the UTXO, failing if not found
-    let node = match self.tree.lookup_mut(&txid.as_uint256(), KEY_LEN) {
+    let node = match self.tree.lookup_mut(&txid.as_uint128(), KEY_LEN) {
       Some(node) => node,
       None => return None
     };
@@ -239,7 +242,7 @@ mod tests {
 
     let mut read_set = deserial.unwrap();
     for &(n, hash) in hashes.iter() {
-      let expected = Some(TxOut { value: rand(n as uint) as u64, script_pubkey: Script::new() });
+      let expected = Some(box TxOut { value: rand(n as uint) as u64, script_pubkey: Script::new() });
       // Try taking non-existent UTXO
       assert_eq!(read_set.take_utxo(hash, 100 + n), None);
       // Check take of real UTXO

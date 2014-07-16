@@ -342,7 +342,7 @@ macro_rules! serialize_fixvec(
 // we need to do this in one call so that we can do a test for
 // every value; we can't define a new test fn for each invocation
 // because there are no gensyms.
-serialize_fixvec!(4, 12, 16, 32)
+serialize_fixvec!(4, 8, 12, 16, 32)
 
 impl Serializable for CheckedData {
   fn serialize(&self) -> Vec<u8> {
