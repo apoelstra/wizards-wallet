@@ -26,6 +26,9 @@ use network::serialize::{Serializable, SerializeIter};
 use util::hash::Sha256dHash;
 use util::patricia_tree::PatriciaTree;
 
+/// How much of the hash to use as a key
+static KEY_LEN: uint = 120;
+
 /// Vector of outputs; None indicates a nonexistent or already spent output
 type UtxoNode = Vec<Option<TxOut>>;
 
@@ -57,7 +60,7 @@ impl UtxoSet {
     let txid = txid.as_uint256();
     // Locate node if it's already there
     {
-      match self.tree.lookup_mut(&txid, 256) {
+      match self.tree.lookup_mut(&txid, KEY_LEN) {
         Some(node) => {
           // Insert the output
           node.grow_set(vout as uint, &None, Some(txo));
@@ -70,7 +73,7 @@ impl UtxoSet {
     // If we haven't returned yet, the node wasn't there. So insert it.
     let mut new_node = vec![];
     new_node.grow_set(vout as uint, &None, Some(txo));
-    self.tree.insert(&txid, 256, new_node);
+    self.tree.insert(&txid, KEY_LEN, new_node);
     // Return success
     return true;
   }
@@ -80,7 +83,7 @@ impl UtxoSet {
     let txid = tx.hash();
     // Locate node if it's already there
     {
-      match self.tree.lookup_mut(&txid.as_uint256(), 256) {
+      match self.tree.lookup_mut(&txid.as_uint256(), KEY_LEN) {
         Some(node) => {
           node.reserve(tx.output.len());
           // Insert the output
@@ -99,29 +102,45 @@ impl UtxoSet {
     for (vout, txo) in tx.output.iter().enumerate() {
       new_node.grow_set(vout as uint, &None, Some(txo.clone()));
     }
-    self.tree.insert(&txid.as_uint256(), 256, new_node);
+    self.tree.insert(&txid.as_uint256(), KEY_LEN, new_node);
     // Return success
     return true;
   }
 
   /// Remove a UTXO from the set and return it
   fn take_utxo(&mut self, txid: Sha256dHash, vout: u32) -> Option<TxOut> {
-    // Locate the UTXO, failing if not found
-    let node = match self.tree.lookup_mut(&txid.as_uint256(), 256) {
-      Some(node) => node,
-      None => return None
+    // This whole function has awkward scoping thx to lexical borrow scoping :(
+    let (ret, should_delete) = {
+      // Locate the UTXO, failing if not found
+      let node = match self.tree.lookup_mut(&txid.as_uint256(), KEY_LEN) {
+        Some(node) => node,
+        None => return None
+      };
+
+      let ret = {
+        // Check that this specific output is there
+        if vout as uint >= node.len() { return None; }
+        let replace = node.get_mut(vout as uint);
+        replace.take()
+      };
+
+      let should_delete = node.iter().filter(|slot| slot.is_some()).count() == 0;
+      (ret, should_delete)
     };
-    // Check that this specific output is there
-    if vout as uint >= node.len() { return None; }
-    let replace = node.get_mut(vout as uint);
-    self.n_utxos -= if replace.is_some() { 1 } else { 0 };
-    replace.take()
+
+    // Delete the whole node if it is no longer being used
+    if should_delete {
+      self.tree.delete(&txid.as_uint256(), KEY_LEN);
+    }
+
+    self.n_utxos -= if ret.is_some() { 1 } else { 0 };
+    ret
   }
 
   /// Determine whether a UTXO is in the set
   fn get_utxo<'a>(&'a mut self, txid: Sha256dHash, vout: u32) -> Option<&'a TxOut> {
     // Locate the UTXO, failing if not found
-    let node = match self.tree.lookup_mut(&txid.as_uint256(), 256) {
+    let node = match self.tree.lookup_mut(&txid.as_uint256(), KEY_LEN) {
       Some(node) => node,
       None => return None
     };
@@ -178,6 +197,11 @@ impl UtxoSet {
   /// Get the number of UTXOs in the set
   pub fn n_utxos(&self) -> uint {
     self.n_utxos as uint
+  }
+
+  /// Get the number of UTXOs in the set
+  pub fn tree_size(&self) -> uint {
+    self.tree.node_count()
   }
 }
 

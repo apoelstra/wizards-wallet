@@ -14,5 +14,5 @@
 
 //! # Constants
 
-pub static UTXO_SYNC_N_BLOCKS: uint = 1000;
+pub static UTXO_SYNC_N_BLOCKS: uint = 2500;
 

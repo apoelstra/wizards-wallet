@@ -172,6 +172,7 @@ impl Bitcoind {
             // Every so often, send a new message
             if (count + 1) % UTXO_SYNC_N_BLOCKS == 0 {
               if (count + 1) % 100 == 0 {
+//                println!("Sending getdata, count {} n_utxos {} nodes {} ratio {}", count + 1, idle_state.utxo_set.n_utxos(), idle_state.utxo_set.tree_size(), idle_state.utxo_set.tree_size() as f64 / idle_state.utxo_set.n_utxos() as f64);
                 println!("Sending getdata, count {} n_utxos {}", count + 1, idle_state.utxo_set.n_utxos());
               }
               consume_err("UTXO sync: failed to send `getdata` message",

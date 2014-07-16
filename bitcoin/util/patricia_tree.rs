@@ -299,6 +299,17 @@ impl<T> PatriciaTree<T> {
     let (_, ret) = recurse(self, *key, key_len);
     ret
   }
+
+  /// Count all the nodes
+  pub fn node_count(&self) -> uint {
+    fn recurse<T>(node: &Option<Box<PatriciaTree<T>>>) -> uint {
+      match node {
+        &Some(ref node) => { 1 + recurse(&node.child_l) + recurse(&node.child_r) }
+        &None => 0
+      }
+    }
+    1 + recurse(&self.child_l) + recurse(&self.child_r)
+  }
 }
 
 impl<T:Show> PatriciaTree<T> {
