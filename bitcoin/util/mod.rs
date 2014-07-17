@@ -20,6 +20,7 @@ pub mod hash;
 pub mod iter;
 pub mod misc;
 pub mod patricia_tree;
+pub mod thinvec;
 pub mod uint;
 
 /// A trait which allows numbers to act as fixed-size bit arrays

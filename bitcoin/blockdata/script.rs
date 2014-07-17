@@ -28,14 +28,15 @@ use std::io::IoResult;
 
 use network::serialize::Serializable;
 use blockdata::opcodes;
+use util::thinvec::ThinVec;
 
 #[deriving(PartialEq, Show, Clone)]
 /// A Bitcoin script
-pub struct Script(Vec<u8>);
+pub struct Script(ThinVec<u8>);
 
 impl Script {
   /// Creates a new empty script
-  pub fn new() -> Script { Script(vec![]) }
+  pub fn new() -> Script { Script(ThinVec::new()) }
 
   /// Adds instructions to push an integer onto the stack. Integers are
   /// encoded as little-endian signed-magnitude numbers, but there are
@@ -138,12 +139,13 @@ mod test {
   use blockdata::script::Script;
   use blockdata::opcodes;
   use util::misc::hex_bytes;
+  use util::thinvec::ThinVec;
 
   #[test]
   fn script() {
-    let mut comp = vec![];
+    let mut comp = ThinVec::new();
     let mut script = Script::new();
-    assert_eq!(script, Script(vec![]));
+    assert_eq!(script, Script(ThinVec::new()));
 
     // small ints
     script.push_int(1);  comp.push(82u8); assert_eq!(script, Script(comp.clone()));

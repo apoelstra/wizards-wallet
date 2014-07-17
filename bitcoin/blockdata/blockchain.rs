@@ -414,6 +414,8 @@ impl Blockchain {
       return false;
     }
 
+    // Insert the new block
+    self.tree.insert(&rc_block.block.header.hash().as_uint256(), 256, rc_block.clone());
     // Replace the best tip if necessary
     if rc_block.total_work > self.best_tip.total_work {
       self.set_best_tip(rc_block);

@@ -25,9 +25,11 @@ use std::io::{IoError, IoResult, InvalidInput, OtherIoError, standard_error};
 use std::io::{BufferedReader, BufferedWriter, File, Truncate, Write};
 use std::io::fs::rename;
 use std::mem::transmute;
+use std::u32;
 
 use util::iter::{FixedTake, FixedTakeable, NullIterator};
 use util::hash::Sha256dHash;
+use util::thinvec::ThinVec;
 
 /// An iterator which returns serialized data one byte at a time
 pub struct SerializeIter<'a> {
@@ -414,6 +416,30 @@ impl<T: Serializable> Serializable for Vec<T> {
     while n_elems > 0 {
       v.push(try!(Serializable::deserialize(iter.by_ref())));
       n_elems -= 1;
+    }
+    Ok(v)
+  }
+}
+
+impl<T: Serializable> Serializable for ThinVec<T> {
+  fn serialize(&self) -> Vec<u8> {
+    let n_elems = u64_to_varint(self.len() as u64);
+    let mut rv = n_elems.serialize();
+    for elem in self.iter() {
+      rv.extend(elem.serialize().move_iter());
+    }
+    rv
+  }
+
+  fn deserialize<I: Iterator<u8>>(mut iter: I) -> IoResult<ThinVec<T>> {
+    let n_elems = varint_to_u64(try!(Serializable::deserialize(iter.by_ref())));
+    assert!(n_elems < u32::MAX as u64);
+
+    let mut v: ThinVec<T> = ThinVec::with_capacity(n_elems as u32);
+    for i in range(0, n_elems) {
+      unsafe {
+        v.init(i as uint, try!(Serializable::deserialize(iter.by_ref())));
+      };
     }
     Ok(v)
   }

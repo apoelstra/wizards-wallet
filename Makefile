@@ -13,10 +13,10 @@ wizards-wallet: *.rs libbitcoin.rlib
 	rustc --opt-level=3 -g -L . wizards-wallet.rs
 
 check: *.rs libbitcoin.rlib bitcoin/*.rs bitcoin/*/*.rs
-	rustc --test --crate-type=rlib bitcoin/lib.rs -o testbin
+	rustc --test -g --crate-type=rlib bitcoin/lib.rs -o testbin
 	./testbin
 	rm testbin
-	rustc --test -L . test-root.rs -o testbin
+	rustc --test -g -L . test-root.rs -o testbin
 	./testbin
 	rm testbin
 
