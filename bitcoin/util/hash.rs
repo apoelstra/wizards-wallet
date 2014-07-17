@@ -149,14 +149,14 @@ impl fmt::Show for Sha256dHash {
         return zero_hash();
       }
       if data.len() < 2 {
-        return *data.get(0);
+        return data[0];
       }
       // Recursion
       let mut next = vec![];
       for idx in range(0, (data.len() + 1) / 2) {
         let idx1 = 2 * idx;
         let idx2 = min(idx1 + 1, data.len() - 1);
-        let to_hash = data.get(idx1).hash().serialize().append(data.get(idx2).hash().serialize().as_slice());
+        let to_hash = data[idx1].hash().serialize().append(data[idx2].hash().serialize().as_slice());
         next.push(to_hash.hash());
       }
       merkle_root(next)

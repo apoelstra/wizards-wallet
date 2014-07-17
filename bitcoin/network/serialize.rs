@@ -445,6 +445,21 @@ impl<T: Serializable> Serializable for ThinVec<T> {
   }
 }
 
+impl<T:Serializable, U:Serializable> Serializable for (T, U) {
+  fn serialize(&self) -> Vec<u8> {
+    let &(ref self1, ref self2) = self;
+    let mut ret = vec![];
+    ret.extend(self1.serialize().move_iter());
+    ret.extend(self2.serialize().move_iter());
+    ret
+  }
+
+  fn deserialize<I: Iterator<u8>>(mut iter: I) -> IoResult<(T, U)> {
+    Ok((try!(Serializable::deserialize(iter.by_ref())),
+        try!(Serializable::deserialize(iter.by_ref()))))
+  }
+}
+
 impl<T:Serializable+'static> Serializable for Option<T> {
   fn serialize(&self) -> Vec<u8> {
     match self {

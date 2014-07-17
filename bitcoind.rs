@@ -268,6 +268,9 @@ fn idle_message(idle_state: &mut IdleState, message: NetworkMessage) {
         idle_state.sock.send_message(message::Verack));
     }
     message::Verack => {}
+    message::Addr(_) => {
+      println!("Got addr, ignoring since we only support one peer for now.");
+    }
     message::Block(block) => {
       println!("Received block: {:x}", block.header.hash());
       if !idle_state.blockchain.add_header(block.header) {

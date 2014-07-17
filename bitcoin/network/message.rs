@@ -23,6 +23,7 @@ use collections::Vec;
 use std::io::{IoError, IoResult, InvalidInput, OtherIoError, standard_error};
 
 use blockdata::block;
+use network::address::Address;
 use network::message_network;
 use network::message_blockdata;
 use network::serialize::{Serializable, CheckedData};
@@ -69,7 +70,8 @@ pub enum NetworkMessage{
   Version(message_network::VersionMessage),
   /// `verack`
   Verack,
-  // TODO: addr,
+  /// `addr`
+  Addr(Vec<(u32, Address)>),
   /// `inv`
   Inv(Vec<message_blockdata::Inventory>),
   /// `getdata`
@@ -104,6 +106,7 @@ impl RawNetworkMessage {
     match self.payload {
       Version(_) => "version",
       Verack     => "verack",
+      Addr(_)    => "addr",
       Inv(_)     => "inv",
       GetData(_) => "getdata",
       NotFound(_) => "notfound",
@@ -125,6 +128,7 @@ impl Serializable for RawNetworkMessage {
     let payload_data = match self.payload {
       Version(ref dat) => dat.serialize(),
       Verack           => vec![],
+      Addr(ref dat)    => dat.serialize(),
       Inv(ref dat)     => dat.serialize(),
       GetData(ref dat) => dat.serialize(),
       NotFound(ref dat) => dat.serialize(),
@@ -146,6 +150,7 @@ impl Serializable for RawNetworkMessage {
     let payload = match cmd.as_slice() {
       "version" => Version(try!(prepend_err("version", Serializable::deserialize(raw_payload.iter().map(|n| *n))))),
       "verack"  => Verack,
+      "addr"    => Addr(try!(prepend_err("addr", Serializable::deserialize(raw_payload.iter().map(|n| *n))))),
       "inv"     => Inv(try!(prepend_err("inv", Serializable::deserialize(raw_payload.iter().map(|n| *n))))),
       "getdata" => GetData(try!(prepend_err("getdata", Serializable::deserialize(raw_payload.iter().map(|n| *n))))),
       "notfound" => NotFound(try!(prepend_err("notfound", Serializable::deserialize(raw_payload.iter().map(|n| *n))))),
