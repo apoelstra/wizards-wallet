@@ -62,33 +62,14 @@ impl UtxoSet {
   fn add_utxos(&mut self, tx: &Transaction) -> bool {
     let txid = tx.hash();
     // Locate node if it's already there
-    {
-      match self.tree.lookup_mut(&txid.as_uint128(), KEY_LEN) {
-        Some(node) => {
-          node.reserve(tx.output.len() as u32);
-          // Insert the output
-          for (vout, txo) in tx.output.iter().enumerate() {
-            // Unsafe since if node has not yet been initialized, overwriting
-            // a mutable pointer like this would cause uninitialized data to
-            // be dropped.
-            unsafe { *node.get_mut(vout as uint) = Some(box txo.clone()); }
-          }
-          // Return success
-          return true;
-        }
-        None => {}
-      };
-    }
-    // If we haven't returned yet, the node wasn't there. So insert it.
     let mut new_node = ThinVec::with_capacity(tx.output.len() as u32);
     self.n_utxos += tx.output.len() as u64;
     for (vout, txo) in tx.output.iter().enumerate() {
       // Unsafe since we are not uninitializing the old data in the vector
       unsafe { new_node.init(vout as uint, Some(box txo.clone())); }
     }
-    self.tree.insert(&txid.as_uint128(), KEY_LEN, new_node);
-    // Return success
-    return true;
+    // TODO: insert/lookup should return a Result which we pass along
+    return self.tree.insert_or_update(&txid.as_uint128(), KEY_LEN, new_node);
   }
 
   /// Remove a UTXO from the set and return it
@@ -161,6 +142,16 @@ impl UtxoSet {
       }
 
       // Add outputs
+      // TODO:
+      //   We should perhaps react if this fails. There are two cases this will
+      //   happen: a duplicate coinbase or duplicate non-coinbase transaction.
+      //   A non-coinbase will have spent inputs and be caught above. A coinbase
+      //   dupe has in fact happened, and what we do here is overwrite the old
+      //   utxos. This is correct behaviour for the first occurence, which got
+      //   in the blockchain before we knew to filter for it. But if it happens
+      //   again we should reject. For now, trust the peer not to do this to us.
+      //   In future, excepting blocks 91842 and 91880 we should unwind if this
+      //   happens, as per BIP30.
       self.add_utxos(tx);
     }
     // Actually remove the inputs
