@@ -64,21 +64,20 @@ fn main()
   println!("Starting the Wizards' Wallet");
 
   // Connect to bitcoind
-  let mut bitcoind = Bitcoind::new("127.0.0.1", 8333,
-                                   blockchain_path(),
-                                   utxo_set_path());
+  let network = bitcoin::network::constants::BitcoinTestnet;
+  let mut bitcoind = Bitcoind::new("127.0.0.1", 18333,
+                                   network,
+                                   blockchain_path(network),
+                                   utxo_set_path(network));
   // Loop until we get a successful connection
   loop {
     match bitcoind.listen() {
       Err(e) => {
         println!("Got error {:}, trying to connect again...", e);
+        timer::sleep(1000);
       }
       _ => { break; }
     }
-  }
-  // Loop forever
-  loop {
-    timer::sleep(1000);
   }
 }
 

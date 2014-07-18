@@ -16,8 +16,8 @@ use std::io::IoResult;
 use std::path::posix::Path;
 
 use bitcoin::blockdata::blockchain::Blockchain;
-use bitcoin::blockdata::constants::genesis_block;
 use bitcoin::blockdata::utxoset::UtxoSet;
+use bitcoin::network::constants::Network;
 use bitcoin::network::serialize::Serializable;
 use bitcoin::network::listener::Listener;
 use bitcoin::network::socket::Socket;
@@ -50,6 +50,7 @@ enum StartupState {
 }
 
 pub struct Bitcoind {
+  network: Network,
   peer_address: String,
   peer_port: u16,
   blockchain_path: Path,
@@ -77,10 +78,12 @@ macro_rules! with_next_message(
 )
 
 impl Bitcoind {
-  pub fn new(peer_address: &str, peer_port: u16, blockchain_path: Path, utxo_set_path: Path) -> Bitcoind {
+  pub fn new(peer_address: &str, peer_port: u16, network: Network,
+             blockchain_path: Path, utxo_set_path: Path) -> Bitcoind {
     Bitcoind {
       peer_address: String::from_str(peer_address),
       peer_port: peer_port,
+      network: network,
       blockchain_path: blockchain_path,
       utxo_set_path: utxo_set_path
     }
@@ -106,7 +109,7 @@ impl Bitcoind {
             Ok(blockchain) => blockchain,
             Err(e) => {
               println!("Failed to load blockchain: {:}, starting from genesis.", e);
-              Blockchain::new(genesis_block())
+              Blockchain::new(self.network)
             }
           };
           println!("Loading utxo set...");
@@ -114,7 +117,7 @@ impl Bitcoind {
             Ok(utxo_set) => utxo_set,
             Err(e) => {
               println!("Failed to load UTXO set: {:}, starting from genesis.", e);
-              UtxoSet::new(genesis_block(), BLOCKCHAIN_N_FULL_BLOCKS)
+              UtxoSet::new(self.network, BLOCKCHAIN_N_FULL_BLOCKS)
             }
           };
 
@@ -142,8 +145,11 @@ impl Bitcoind {
               with_next_message!(idle_state.net_chan.recv(),
                 message::Headers(headers) => {
                   for lone_header in headers.iter() {
-                    if !idle_state.blockchain.add_header(lone_header.header) {
-                       println!("Headers sync: failed to add {} to chain", lone_header.header.hash());
+                    match idle_state.blockchain.add_header(lone_header.header) {
+                      Err(e) => {
+                        println!("Headers sync: failed to add {}: {}", lone_header.header.hash(), e);
+                      }
+                       _ => {}
                     }
                   }
                   received_headers = true;
@@ -181,7 +187,7 @@ impl Bitcoind {
 
             // Every so often, send a new message
             if count % UTXO_SYNC_N_BLOCKS == 0 {
-              println!("Sending getdata, count {} n_utxos {}", count + 1, idle_state.utxo_set.n_utxos());
+              println!("Sending getdata, count {} n_utxos {}", count, idle_state.utxo_set.n_utxos());
               consume_err("UTXO sync: failed to send `getdata` message",
                 idle_state.sock.send_message(message::GetData(cache.clone())));
 
@@ -230,8 +236,11 @@ impl Bitcoind {
             let mut hashes_to_drop_data = vec![];
             let mut inv_to_add_data = vec![];
             for (n, node) in idle_state.blockchain.rev_iter(idle_state.blockchain.best_tip_hash()).enumerate() {
-              if n < BLOCKCHAIN_N_FULL_BLOCKS && !node.has_txdata {
-                inv_to_add_data.push(Inventory { inv_type: InvBlock, hash: node.block.header.hash() });
+              if n < BLOCKCHAIN_N_FULL_BLOCKS {
+                if !node.has_txdata {
+                  inv_to_add_data.push(Inventory { inv_type: InvBlock,
+                                                   hash: node.block.header.hash() });
+                }
               } else if node.has_txdata {
                 hashes_to_drop_data.push(node.block.header.hash());
               }
@@ -242,7 +251,10 @@ impl Bitcoind {
             // Delete old block data
             for hash in hashes_to_drop_data.move_iter() {
               println!("Dropping old blockdata for {}", hash);
-              idle_state.blockchain.remove_txdata(hash);
+              match idle_state.blockchain.remove_txdata(hash) {
+                Err(e) => { println!("Failed to remove txdata: {}", e); }
+                _ => {}
+              }
             }
             // Receive new block data
             let mut block_count = 0;
@@ -250,7 +262,10 @@ impl Bitcoind {
               with_next_message!(idle_state.net_chan.recv(),
                 message::Block(block) => {
                   println!("Adding blockdata for {}", block.header.hash());
-                  idle_state.blockchain.add_txdata(block);
+                  match idle_state.blockchain.add_txdata(block) {
+                    Err(e) => { println!("Failed to add txdata: {}", e); }
+                    _ => {}
+                  }
                   block_count += 1;
                 }
                 message::NotFound(_) => {
@@ -300,6 +315,10 @@ impl Listener for Bitcoind {
   fn port(&self) -> u16 {
     self.peer_port
   }
+
+  fn network(&self) -> Network {
+    self.network
+  }
 }
 
 /// Idle message handler
@@ -316,8 +335,11 @@ fn idle_message(idle_state: &mut IdleState, message: NetworkMessage) {
     }
     message::Block(block) => {
       println!("Received block: {:x}", block.header.hash());
-      if !idle_state.blockchain.add_header(block.header) {
-        println!("failed to add block {:x} to chain", block.header.hash());
+      match idle_state.blockchain.add_block(block) {
+         Err(e) => {
+           println!("Failed to add block: {}", e);
+         }
+         _ => {}
       }
     },
     message::Headers(headers) => {
@@ -346,6 +368,7 @@ fn idle_message(idle_state: &mut IdleState, message: NetworkMessage) {
 
 #[cfg(test)]
 mod tests {
+  use bitcoin::network::constants::BitcoinTestnet;
   use bitcoin::network::listener::Listener;
 
   use user_data::{blockchain_path, utxo_set_path};
@@ -354,14 +377,16 @@ mod tests {
   #[test]
   fn test_bitcoind() {
     let bitcoind = Bitcoind::new("localhost", 1000,
-                                 blockchain_path(),
-                                 utxo_set_path());
+                                 BitcoinTestnet,
+                                 blockchain_path(BitcoinTestnet),
+                                 utxo_set_path(BitcoinTestnet));
     assert_eq!(bitcoind.peer(), "localhost");
     assert_eq!(bitcoind.port(), 1000);
 
     let mut bitcoind = Bitcoind::new("localhost", 0,
-                                     blockchain_path(),
-                                     utxo_set_path());
+                                     BitcoinTestnet,
+                                     blockchain_path(BitcoinTestnet),
+                                     utxo_set_path(BitcoinTestnet));
     assert!(bitcoind.listen().is_err());
   }
 }

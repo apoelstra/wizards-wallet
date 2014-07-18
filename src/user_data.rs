@@ -19,14 +19,22 @@
 
 use std::path::posix::Path;
 
+use bitcoin::network::constants::{Network, Bitcoin, BitcoinTestnet};
+
 /// Returns a path to the blockchain file on disk
-pub fn blockchain_path() -> Path {
-  Path::new("blockchain.dat")
+pub fn blockchain_path(network: Network) -> Path {
+  match network {
+    Bitcoin => Path::new("blockchain.bitcoin.dat"),
+    BitcoinTestnet => Path::new("blockchain.testnet.dat")
+  }
 }
 
 /// Returns a path to the UTXO cache on disk
-pub fn utxo_set_path() -> Path {
-  Path::new("utxoset.dat")
+pub fn utxo_set_path(network: Network) -> Path {
+  match network {
+    Bitcoin => Path::new("utxoset.testnet.dat"),
+    BitcoinTestnet => Path::new("utxoset.testnet.dat"),
+  }
 }
 
 

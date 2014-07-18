@@ -1,18 +1,15 @@
 
 [package]
-
 name = "wizards-wallet"
 version = "0.0.1"
 authors = ["Andrew Poelstra <apoelstra@wpsoftware.net>"]
 
-
 [[bin]]
-
 name = "wizards-wallet"
-path = "src/wizards-wallet.rs"
 
-
-[dependencies.bitcoin-rs]
-
+[dependencies.bitcoin]
 git = "https://github.com/apoelstra/bitcoin-rs.git"
+
+[dependencies.toml]
+git = "https://github.com/alexcrichton/toml-rs.git"
 
