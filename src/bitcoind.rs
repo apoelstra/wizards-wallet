@@ -241,13 +241,15 @@ impl Bitcoind {
               idle_state.sock.send_message(message::GetData(inv_to_add_data.clone())));
             // Delete old block data
             for hash in hashes_to_drop_data.move_iter() {
+              println!("Dropping old blockdata for {}", hash);
               idle_state.blockchain.remove_txdata(hash);
             }
             // Receive new block data
             let mut block_count = 0;
-            while block_count < UTXO_SYNC_N_BLOCKS {
+            while block_count < inv_to_add_data.len() {
               with_next_message!(idle_state.net_chan.recv(),
                 message::Block(block) => {
+                  println!("Adding blockdata for {}", block.header.hash());
                   idle_state.blockchain.add_txdata(block);
                   block_count += 1;
                 }
@@ -346,16 +348,20 @@ fn idle_message(idle_state: &mut IdleState, message: NetworkMessage) {
 mod tests {
   use bitcoin::network::listener::Listener;
 
-  use user_data::blockchain_path;
+  use user_data::{blockchain_path, utxo_set_path};
   use bitcoind::Bitcoind;
 
   #[test]
   fn test_bitcoind() {
-    let bitcoind = Bitcoind::new("localhost", 1000, &blockchain_path());
+    let bitcoind = Bitcoind::new("localhost", 1000,
+                                 blockchain_path(),
+                                 utxo_set_path());
     assert_eq!(bitcoind.peer(), "localhost");
     assert_eq!(bitcoind.port(), 1000);
 
-    let mut bitcoind = Bitcoind::new("localhost", 0, &blockchain_path());
+    let mut bitcoind = Bitcoind::new("localhost", 0,
+                                     blockchain_path(),
+                                     utxo_set_path());
     assert!(bitcoind.listen().is_err());
   }
 }
