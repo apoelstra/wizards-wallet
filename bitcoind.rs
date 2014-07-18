@@ -28,6 +28,7 @@ use bitcoin::util::patricia_tree::PatriciaTree;
 use bitcoin::util::misc::consume_err;
 use bitcoin::util::hash::zero_hash;
 
+use constants::BLOCKCHAIN_N_FULL_BLOCKS;
 use constants::UTXO_SYNC_N_BLOCKS;
 
 /// We use this IdleState structure to avoid having Option<T>
@@ -113,7 +114,7 @@ impl Bitcoind {
             Ok(utxo_set) => utxo_set,
             Err(e) => {
               println!("Failed to load UTXO set: {:}, starting from genesis.", e);
-              UtxoSet::new(genesis_block())
+              UtxoSet::new(genesis_block(), BLOCKCHAIN_N_FULL_BLOCKS)
             }
           };
 
@@ -126,7 +127,8 @@ impl Bitcoind {
         },
         // Synchronize the blockchain with the peer
         SyncBlockchain(mut idle_state) => {
-          println!("Headers sync: last best tip {}", idle_state.blockchain.best_tip().header.hash());
+          // Do a headers-first sync of all blocks
+          println!("Headers sync: last best tip {}", idle_state.blockchain.best_tip_hash());
           let mut done = false;
           while !done {
             // Request headers
@@ -155,6 +157,7 @@ impl Bitcoind {
               );
             }
           }
+          // Done!
           println!("Done sync.");
           SyncUtxoSet(idle_state, Vec::with_capacity(UTXO_SYNC_N_BLOCKS))
         },
@@ -164,17 +167,21 @@ impl Bitcoind {
           let mut failed = false;
 
           cache.clear();
-          // TODO: unwind any reorgs
+          // Unwind any reorg'd blooks
+          for block in idle_state.blockchain.rev_stale_iter(last_hash) {
+            println!("Rewinding stale block {}", block.header.hash());
+            if !idle_state.utxo_set.rewind(block) {
+              println!("Failed to rewind stale block {}", block.header.hash());
+            }
+          }
           // Loop through blockchain for new data
-          for (count, node) in idle_state.blockchain.iter(last_hash).skip(1).enumerate() {
+          let last_hash = idle_state.utxo_set.last_hash();
+          for (count, node) in idle_state.blockchain.iter(last_hash).enumerate().skip(1) {
             cache.push(Inventory { inv_type: InvBlock, hash: node.block.header.hash() });
 
             // Every so often, send a new message
-            if (count + 1) % UTXO_SYNC_N_BLOCKS == 0 {
-              if (count + 1) % 100 == 0 {
-//                println!("Sending getdata, count {} n_utxos {} nodes {} ratio {}", count + 1, idle_state.utxo_set.n_utxos(), idle_state.utxo_set.tree_size(), idle_state.utxo_set.tree_size() as f64 / idle_state.utxo_set.n_utxos() as f64);
-                println!("Sending getdata, count {} n_utxos {}", count + 1, idle_state.utxo_set.n_utxos());
-              }
+            if count % UTXO_SYNC_N_BLOCKS == 0 {
+              println!("Sending getdata, count {} n_utxos {}", count + 1, idle_state.utxo_set.n_utxos());
               consume_err("UTXO sync: failed to send `getdata` message",
                 idle_state.sock.send_message(message::GetData(cache.clone())));
 
@@ -215,11 +222,45 @@ impl Bitcoind {
               cache.clear();
             }
           }
-          // TODO: save last 100 blocks
           if failed {
             println!("Failed to sync UTXO set, trying to resync chain.");
             SyncBlockchain(idle_state)
           } else {
+            // Now that we're done with reorgs, update our cached block data
+            let mut hashes_to_drop_data = vec![];
+            let mut inv_to_add_data = vec![];
+            for (n, node) in idle_state.blockchain.rev_iter(idle_state.blockchain.best_tip_hash()).enumerate() {
+              if n < BLOCKCHAIN_N_FULL_BLOCKS && !node.has_txdata {
+                inv_to_add_data.push(Inventory { inv_type: InvBlock, hash: node.block.header.hash() });
+              } else if node.has_txdata {
+                hashes_to_drop_data.push(node.block.header.hash());
+              }
+            }
+            // Request new block data
+            consume_err("UTXO sync: failed to send `getdata` message",
+              idle_state.sock.send_message(message::GetData(inv_to_add_data.clone())));
+            // Delete old block data
+            for hash in hashes_to_drop_data.move_iter() {
+              idle_state.blockchain.remove_txdata(hash);
+            }
+            // Receive new block data
+            let mut block_count = 0;
+            while block_count < UTXO_SYNC_N_BLOCKS {
+              with_next_message!(idle_state.net_chan.recv(),
+                message::Block(block) => {
+                  idle_state.blockchain.add_txdata(block);
+                  block_count += 1;
+                }
+                message::NotFound(_) => {
+                  println!("Blockchain sync: received `notfound` on full blockdata, will not be able to handle reorgs past this block.");
+                  block_count += 1;
+                }
+                message::Ping(nonce) => {
+                  consume_err("Warning: failed to send pong in response to ping",
+                    idle_state.sock.send_message(message::Pong(nonce)));
+                }
+              )
+            }
             SaveToDisk(idle_state)
           }
         },

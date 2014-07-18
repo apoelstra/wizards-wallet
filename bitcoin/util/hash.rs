@@ -74,6 +74,17 @@ impl Sha256dHash {
                                 data[26], data[27], data[28], data[29], data[30],
                                 data[31]])) }
   }
+
+  /// Human-readable hex output
+  pub fn le_hex_string(&self) -> String {
+    let &Sha256dHash(data) = self;
+    let mut ret = String::with_capacity(64);
+    for i in range(0u, 32).rev() {
+      ret.push_char(from_digit((data[i] / 0x10) as uint, 16).unwrap());
+      ret.push_char(from_digit((data[i] & 0x0f) as uint, 16).unwrap());
+    }
+    ret
+  }
 }
 
 impl Clone for Sha256dHash {
@@ -178,6 +189,8 @@ mod tests {
   fn test_sha256d() {
     assert_eq!(Sha256dHash::from_data(&[]).as_slice(),
                hex_bytes("5df6e0e2761359d30a8275058e299fcc0381534545f55cf43e41983f5d4c9456").unwrap().as_slice());
+    assert_eq!(Sha256dHash::from_data(&[]).le_hex_string(),
+               "56944c5d3f98413ef45cf54545538103cc9f298e0575820ad3591376e2e0f65d".to_string());
     assert_eq!(Sha256dHash::from_data(b"TEST").as_slice(),
                hex_bytes("d7bd34bfe44a18d2aa755a344fe3e6b06ed0473772e6dfce16ac71ba0b0a241c").unwrap().as_slice());
   }

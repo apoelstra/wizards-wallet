@@ -143,7 +143,7 @@ fn getblocks_message_test() {
   let real_decode = decode.unwrap();
   assert_eq!(real_decode.version, 70002);
   assert_eq!(real_decode.locator_hashes.len(), 1);
-  assert_eq!(real_decode.locator_hashes.get(0).as_slice(), genhash.as_slice());
+  assert_eq!(real_decode.locator_hashes[0].as_slice(), genhash.as_slice());
   assert_eq!(real_decode.stop_hash.as_slice(), zero_hash().as_slice());
 
   let reserialize = real_decode.serialize();
@@ -160,7 +160,7 @@ fn getheaders_message_test() {
   let real_decode = decode.unwrap();
   assert_eq!(real_decode.version, 70002);
   assert_eq!(real_decode.locator_hashes.len(), 1);
-  assert_eq!(real_decode.locator_hashes.get(0).as_slice(), genhash.as_slice());
+  assert_eq!(real_decode.locator_hashes[0].as_slice(), genhash.as_slice());
   assert_eq!(real_decode.stop_hash.as_slice(), zero_hash().as_slice());
 
   let reserialize = real_decode.serialize();

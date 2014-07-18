@@ -96,14 +96,16 @@ impl<T, K:BitArray+Eq+Zero+One+BitXor<K,K>+Shl<uint,K>+Shr<uint,K>> PatriciaTree
 
   /// Inserts a value with key `key`, returning true on success. If a value is already
   /// stored against `key`, do nothing and return false.
+  #[inline]
   pub fn insert(&mut self, key: &K, key_len: uint, value: T) -> bool {
-    self.real_insert(key, key_len, false);
+    self.real_insert(key, key_len, value, false)
   }
 
   /// Inserts a value with key `key`, returning true on success. If a value is already
   /// stored against `key`, overwrite it and return false.
+  #[inline]
   pub fn insert_or_update(&mut self, key: &K, key_len: uint, value: T) -> bool {
-    self.real_insert(key, key_len, true);
+    self.real_insert(key, key_len, value, true)
   }
 
   fn real_insert(&mut self, key: &K, key_len: uint, value: T, overwrite: bool) -> bool {

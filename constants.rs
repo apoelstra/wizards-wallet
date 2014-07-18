@@ -14,5 +14,9 @@
 
 //! # Constants
 
+/// The number of blocks to request at once during UTXO sync
 pub static UTXO_SYNC_N_BLOCKS: uint = 2500;
+
+/// The number of blocks to store full blockdata on in case of reorg
+pub static BLOCKCHAIN_N_FULL_BLOCKS: uint = 100;
 

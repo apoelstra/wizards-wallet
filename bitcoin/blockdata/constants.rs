@@ -106,16 +106,16 @@ mod test {
 
     assert_eq!(gen.version, 1);
     assert_eq!(gen.input.len(), 1);
-    assert_eq!(gen.input.get(0).prev_hash.as_slice(), zero_hash().as_slice());
-    assert_eq!(gen.input.get(0).prev_index, 0xFFFFFFFF);
-    assert_eq!(gen.input.get(0).script_sig.serialize().as_slice(),
+    assert_eq!(gen.input[0].prev_hash.as_slice(), zero_hash().as_slice());
+    assert_eq!(gen.input[0].prev_index, 0xFFFFFFFF);
+    assert_eq!(gen.input[0].script_sig.serialize().as_slice(),
                hex_bytes("4d04ffff001d0104455468652054696d65732030332f4a616e2f32303039204368616e63656c6c6f72206f6e206272696e6b206f66207365636f6e64206261696c6f757420666f722062616e6b73").unwrap().as_slice());
 
-    assert_eq!(gen.input.get(0).sequence, MAX_SEQUENCE);
+    assert_eq!(gen.input[0].sequence, MAX_SEQUENCE);
     assert_eq!(gen.output.len(), 1);
-    assert_eq!(gen.output.get(0).script_pubkey.serialize().as_slice(),
+    assert_eq!(gen.output[0].script_pubkey.serialize().as_slice(),
                hex_bytes("434104678afdb0fe5548271967f1a67130b7105cd6a828e03909a67962e0ea1f61deb649f6bc3f4cef38c4f35504e51ec112de5c384df7ba0b8d578a4c702b6bf11d5fac").unwrap().as_slice());
-    assert_eq!(gen.output.get(0).value, 50 * COIN_VALUE);
+    assert_eq!(gen.output[0].value, 50 * COIN_VALUE);
     assert_eq!(gen.lock_time, 0);
 
     assert_eq!(gen.hash().serialize().iter().rev().map(|n| *n).collect::<Vec<u8>>(),
