@@ -64,8 +64,8 @@ fn main()
   println!("Starting the Wizards' Wallet");
 
   // Connect to bitcoind
-  let network = bitcoin::network::constants::BitcoinTestnet;
-  let mut bitcoind = Bitcoind::new("127.0.0.1", 18333,
+  let network = bitcoin::network::constants::Bitcoin;
+  let mut bitcoind = Bitcoind::new("127.0.0.1", 8333,
                                    network,
                                    blockchain_path(network),
                                    utxo_set_path(network));
