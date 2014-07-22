@@ -13,6 +13,7 @@
  */
 
 use std::io::IoResult;
+use std::io::timer::Timer;
 use std::path::posix::Path;
 use std::sync::{Arc, RWLock};
 
@@ -24,13 +25,14 @@ use bitcoin::network::listener::Listener;
 use bitcoin::network::socket::Socket;
 use bitcoin::network::message::NetworkMessage;
 use bitcoin::network::message;
-use bitcoin::network::message_blockdata::{GetHeadersMessage, Inventory, InvBlock};
+use bitcoin::network::message_blockdata::{GetBlocksMessage, GetHeadersMessage, Inventory, InvBlock};
 use bitcoin::util::patricia_tree::PatriciaTree;
 use bitcoin::util::misc::consume_err;
 use bitcoin::util::hash::zero_hash;
 
 use constants::BLOCKCHAIN_N_FULL_BLOCKS;
 use constants::UTXO_SYNC_N_BLOCKS;
+use constants::SAVE_FREQUENCY;
 
 /// We use this IdleState structure to avoid having Option<T>
 /// on some stuff that isn't available during bootstrap.
@@ -92,6 +94,8 @@ impl Bitcoind {
 
   /// Run the state machine
   pub fn listen(&mut self) -> IoResult<()> {
+    let mut timer = Timer::new().unwrap();  // TODO: can this fail? what should we do?
+    let save_timer = timer.periodic(SAVE_FREQUENCY as u64);
     let mut state = Init;
     // Eternal state machine loop
     loop {
@@ -300,9 +304,18 @@ impl Bitcoind {
         // Idle loop
         Idle(mut idle_state) => {
           println!("Idling...");
-          let recv = idle_state.net_chan.recv();
-          idle_message(&mut idle_state, recv);
-          Idle(idle_state)
+          let saveout = nu_select!(
+            message from idle_state.net_chan => {
+              idle_message(&mut idle_state.sock, &idle_state.blockchain, message);
+              false
+            },
+            () from save_timer => true
+          );
+          if saveout {
+            SaveToDisk(idle_state) 
+          } else {
+              Idle(idle_state)
+          }
         },
         // Temporary states
         SaveToDisk(idle_state) => {
@@ -329,7 +342,7 @@ impl Bitcoind {
                 Ok(()) => { println!("Successfully saved UTXO set.") },
                 Err(e) => { println!("failed to write UTXO set: {:}", e); }
               }
-              println!("Done saving blockchain.");
+              println!("Done saving UTXO set.");
             }
           });
           Idle(idle_state)
@@ -354,31 +367,39 @@ impl Listener for Bitcoind {
 }
 
 /// Idle message handler
-fn idle_message(idle_state: &mut IdleState, message: NetworkMessage) {
+fn idle_message(socket: &mut Socket, blockchain: &Arc<RWLock<Blockchain>>, message: NetworkMessage) {
   match message {
     message::Version(_) => {
       // TODO: actually read version message
       consume_err("Warning: failed to send getdata in response to inv",
-        idle_state.sock.send_message(message::Verack));
+        socket.send_message(message::Verack));
     }
     message::Verack => {}
     message::Addr(_) => {
       println!("Got addr, ignoring since we only support one peer for now.");
     }
     message::Block(block) => {
+      let mut lock = blockchain.write();
       println!("Received block: {:x}", block.header.bitcoin_hash());
-      match idle_state.blockchain.read().get_block(block.header.bitcoin_hash()) {
-        Some(_) => { println!("found block"); }
-        _ => { println!("not found block"); }
+      if lock.get_block(block.header.prev_blockhash).is_some() {
+        // non-orphan, add it
+        println!("Received non-orphan, adding to blockchain...");
+        match lock.add_block(block) {
+           Err(e) => {
+             println!("Failed to add block: {}", e);
+           }
+           _ => {}
+        }
+        println!("Done adding block.");
+      } else {
+        let lock = lock.downgrade();
+        // orphan, send getblocks to get all blocks in order
+        println!("Got an orphan, sending a getblocks to get its parents");
+        consume_err("Headers sync: failed to send `headers` message",
+          socket.send_message(message::GetBlocks(
+              GetBlocksMessage::new(lock.locator_hashes(),
+                                    block.header.prev_blockhash))));
       }
-/*
-      match idle_state.blockchain.add_block(block) {
-         Err(e) => {
-           println!("Failed to add block: {}", e);
-         }
-         _ => {}
-      }
-*/
     },
     message::Headers(headers) => {
       for lone_header in headers.iter() {
@@ -390,7 +411,7 @@ fn idle_message(idle_state: &mut IdleState, message: NetworkMessage) {
       let sendmsg = message::GetData(inv);
       // Send
       consume_err("Warning: failed to send getdata in response to inv",
-        idle_state.sock.send_message(sendmsg));
+        socket.send_message(sendmsg));
     }
     message::GetData(_) => {}
     message::NotFound(_) => {}
@@ -398,7 +419,7 @@ fn idle_message(idle_state: &mut IdleState, message: NetworkMessage) {
     message::GetHeaders(_) => {}
     message::Ping(nonce) => {
       consume_err("Warning: failed to send pong in response to ping",
-        idle_state.sock.send_message(message::Pong(nonce)));
+        socket.send_message(message::Pong(nonce)));
     }
     message::Pong(_) => {}
   }
