@@ -46,12 +46,17 @@ extern crate rand;
 extern crate rustrt;
 extern crate sync;
 extern crate time;
+extern crate serialize;
 
+extern crate http;
+extern crate jsonrpc;
 #[phase(plugin,link)] extern crate bitcoin;
 
 use std::io::timer;
 
 use bitcoind::Bitcoind;
+use jsonrpc::server::JsonRpcServer;
+use http::server::Server;
 use user_data::{blockchain_path, utxo_set_path};
 
 mod bitcoind;
@@ -65,10 +70,17 @@ fn main()
 
   // Connect to bitcoind
   let network = bitcoin::network::constants::Bitcoin;
+  let (jsonrpc, rpc_rx) = JsonRpcServer::new();
   let mut bitcoind = Bitcoind::new("127.0.0.1", 8333,
-                                   network,
+                                   network, rpc_rx,
                                    blockchain_path(network),
                                    utxo_set_path(network));
+  // Spawn the RPC server
+  spawn (proc() {
+    println!("Starting JSON RPC server...");
+    jsonrpc.serve_forever();
+    println!("JSON RPC server shut down.");
+  });
   // Loop until we get a successful connection
   loop {
     match bitcoind.listen() {

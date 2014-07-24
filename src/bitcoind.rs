@@ -16,6 +16,9 @@ use std::io::IoResult;
 use std::io::timer::Timer;
 use std::path::posix::Path;
 use std::sync::{Arc, RWLock};
+use serialize::json;
+
+use jsonrpc;
 
 use bitcoin::blockdata::blockchain::Blockchain;
 use bitcoin::blockdata::utxoset::UtxoSet;
@@ -56,6 +59,7 @@ pub struct Bitcoind {
   network: Network,
   peer_address: String,
   peer_port: u16,
+  rpc_rx: Receiver<(jsonrpc::Request, Sender<Result<json::Json, json::Json>>)>,
   blockchain_path: Path,
   utxo_set_path: Path
 }
@@ -82,11 +86,13 @@ macro_rules! with_next_message(
 
 impl Bitcoind {
   pub fn new(peer_address: &str, peer_port: u16, network: Network,
+             rpc_rx: Receiver<(jsonrpc::Request, Sender<Result<json::Json, json::Json>>)>,
              blockchain_path: Path, utxo_set_path: Path) -> Bitcoind {
     Bitcoind {
       peer_address: String::from_str(peer_address),
       peer_port: peer_port,
       network: network,
+      rpc_rx: rpc_rx,
       blockchain_path: blockchain_path,
       utxo_set_path: utxo_set_path
     }
@@ -309,12 +315,17 @@ impl Bitcoind {
               idle_message(&mut idle_state.sock, &idle_state.blockchain, message);
               false
             },
-            () from save_timer => true
+            () from save_timer => true,
+            (request, tx) from self.rpc_rx => {
+              println!("Got JSONRPC request {}", request.method);
+              tx.send(Ok(json::String("abracadabra".to_string())));
+              false
+            }
           );
           if saveout {
-            SaveToDisk(idle_state) 
+            SyncBlockchain(idle_state)
           } else {
-              Idle(idle_state)
+            Idle(idle_state)
           }
         },
         // Temporary states
