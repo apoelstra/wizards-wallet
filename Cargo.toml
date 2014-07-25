@@ -16,3 +16,6 @@ git = "https://github.com/alexcrichton/toml-rs.git"
 [dependencies.jsonrpc]
 git = "https://github.com/apoelstra/jsonrpc-rs.git"
 
+[dependencies.xdg]
+git = "https://github.com/o11c/rust-xdg.git"
+

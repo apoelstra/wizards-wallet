@@ -17,23 +17,26 @@
 //! Functions for storing and reading data from disk are here
 //!
 
+use xdg;
 use std::path::posix::Path;
 
 use bitcoin::network::constants::{Network, Bitcoin, BitcoinTestnet};
 
 /// Returns a path to the blockchain file on disk
 pub fn blockchain_path(network: Network) -> Path {
+  let dirs = xdg::XdgDirs::new();
   match network {
-    Bitcoin => Path::new("blockchain.bitcoin.dat"),
-    BitcoinTestnet => Path::new("blockchain.testnet.dat")
+    Bitcoin => dirs.want_write_cache("wizards-wallet/blockchain.bitcoin.dat"),
+    BitcoinTestnet => dirs.want_write_cache("wizards-wallet/blockchain.testnet.dat")
   }
 }
 
 /// Returns a path to the UTXO cache on disk
 pub fn utxo_set_path(network: Network) -> Path {
+  let dirs = xdg::XdgDirs::new();
   match network {
-    Bitcoin => Path::new("utxoset.testnet.dat"),
-    BitcoinTestnet => Path::new("utxoset.testnet.dat"),
+    Bitcoin => dirs.want_write_cache("wizards-wallet/utxoset.bitcoin.dat"),
+    BitcoinTestnet => dirs.want_write_cache("wizards-wallet/utxoset.testnet.dat")
   }
 }
 

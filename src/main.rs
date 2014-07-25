@@ -48,9 +48,10 @@ extern crate sync;
 extern crate time;
 extern crate serialize;
 
+#[phase(plugin,link)] extern crate bitcoin;
 extern crate http;
 extern crate jsonrpc;
-#[phase(plugin,link)] extern crate bitcoin;
+extern crate xdg;
 
 use std::io::timer;
 
