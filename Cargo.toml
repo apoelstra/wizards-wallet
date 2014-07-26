@@ -10,11 +10,17 @@ name = "wizards-wallet"
 [dependencies.bitcoin]
 git = "https://github.com/apoelstra/bitcoin-rs.git"
 
-[dependencies.toml]
-git = "https://github.com/alexcrichton/toml-rs.git"
-
 [dependencies.jsonrpc]
 git = "https://github.com/apoelstra/jsonrpc-rs.git"
+
+[dependencies.phf]
+git = "https://github.com/sfackler/rust-phf.git"
+
+[dependencies.phf_mac]
+git = "https://github.com/sfackler/rust-phf.git"
+
+[dependencies.toml]
+git = "https://github.com/alexcrichton/toml-rs.git"
 
 [dependencies.xdg]
 git = "https://github.com/o11c/rust-xdg.git"

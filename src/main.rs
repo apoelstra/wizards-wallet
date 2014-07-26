@@ -51,6 +51,8 @@ extern crate serialize;
 #[phase(plugin,link)] extern crate bitcoin;
 extern crate http;
 extern crate jsonrpc;
+#[phase(plugin)] extern crate phf_mac;
+extern crate phf;
 extern crate xdg;
 
 use std::io::timer;
@@ -62,6 +64,7 @@ use user_data::{blockchain_path, utxo_set_path};
 
 mod bitcoind;
 mod constants;
+mod rpc_server;
 mod user_data;
 
 /// Entry point

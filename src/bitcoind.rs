@@ -36,14 +36,15 @@ use bitcoin::util::hash::zero_hash;
 use constants::BLOCKCHAIN_N_FULL_BLOCKS;
 use constants::UTXO_SYNC_N_BLOCKS;
 use constants::SAVE_FREQUENCY;
+use rpc_server::handle_rpc;
 
 /// We use this IdleState structure to avoid having Option<T>
 /// on some stuff that isn't available during bootstrap.
-struct IdleState {
+pub struct IdleState {
   sock: Socket,
   net_chan: Receiver<NetworkMessage>,
-  blockchain: Arc<RWLock<Blockchain>>,
-  utxo_set: Arc<RWLock<UtxoSet>>
+  pub blockchain: Arc<RWLock<Blockchain>>,
+  pub utxo_set: Arc<RWLock<UtxoSet>>
 }
 
 enum StartupState {
@@ -59,7 +60,7 @@ pub struct Bitcoind {
   network: Network,
   peer_address: String,
   peer_port: u16,
-  rpc_rx: Receiver<(jsonrpc::Request, Sender<Result<json::Json, json::Json>>)>,
+  rpc_rx: Receiver<(jsonrpc::Request, Sender<jsonrpc::JsonResult<json::Json>>)>,
   blockchain_path: Path,
   utxo_set_path: Path
 }
@@ -86,7 +87,7 @@ macro_rules! with_next_message(
 
 impl Bitcoind {
   pub fn new(peer_address: &str, peer_port: u16, network: Network,
-             rpc_rx: Receiver<(jsonrpc::Request, Sender<Result<json::Json, json::Json>>)>,
+             rpc_rx: Receiver<(jsonrpc::Request, Sender<jsonrpc::JsonResult<json::Json>>)>,
              blockchain_path: Path, utxo_set_path: Path) -> Bitcoind {
     Bitcoind {
       peer_address: String::from_str(peer_address),
@@ -312,13 +313,12 @@ impl Bitcoind {
           println!("Idling...");
           let saveout = nu_select!(
             message from idle_state.net_chan => {
-              idle_message(&mut idle_state.sock, &idle_state.blockchain, message);
+              idle_message(&mut idle_state, message);
               false
             },
             () from save_timer => true,
             (request, tx) from self.rpc_rx => {
-              println!("Got JSONRPC request {}", request.method);
-              tx.send(Ok(json::String("abracadabra".to_string())));
+              tx.send(handle_rpc(request, &mut idle_state));
               false
             }
           );
@@ -378,19 +378,19 @@ impl Listener for Bitcoind {
 }
 
 /// Idle message handler
-fn idle_message(socket: &mut Socket, blockchain: &Arc<RWLock<Blockchain>>, message: NetworkMessage) {
+fn idle_message(idle_state: &mut IdleState, message: NetworkMessage) {
   match message {
     message::Version(_) => {
       // TODO: actually read version message
       consume_err("Warning: failed to send getdata in response to inv",
-        socket.send_message(message::Verack));
+        idle_state.sock.send_message(message::Verack));
     }
     message::Verack => {}
     message::Addr(_) => {
       println!("Got addr, ignoring since we only support one peer for now.");
     }
     message::Block(block) => {
-      let mut lock = blockchain.write();
+      let mut lock = idle_state.blockchain.write();
       println!("Received block: {:x}", block.header.bitcoin_hash());
       if lock.get_block(block.header.prev_blockhash).is_some() {
         // non-orphan, add it
@@ -407,7 +407,7 @@ fn idle_message(socket: &mut Socket, blockchain: &Arc<RWLock<Blockchain>>, messa
         // orphan, send getblocks to get all blocks in order
         println!("Got an orphan, sending a getblocks to get its parents");
         consume_err("Headers sync: failed to send `headers` message",
-          socket.send_message(message::GetBlocks(
+          idle_state.sock.send_message(message::GetBlocks(
               GetBlocksMessage::new(lock.locator_hashes(),
                                     block.header.prev_blockhash))));
       }
@@ -422,7 +422,7 @@ fn idle_message(socket: &mut Socket, blockchain: &Arc<RWLock<Blockchain>>, messa
       let sendmsg = message::GetData(inv);
       // Send
       consume_err("Warning: failed to send getdata in response to inv",
-        socket.send_message(sendmsg));
+        idle_state.sock.send_message(sendmsg));
     }
     message::GetData(_) => {}
     message::NotFound(_) => {}
@@ -430,7 +430,7 @@ fn idle_message(socket: &mut Socket, blockchain: &Arc<RWLock<Blockchain>>, messa
     message::GetHeaders(_) => {}
     message::Ping(nonce) => {
       consume_err("Warning: failed to send pong in response to ping",
-        socket.send_message(message::Pong(nonce)));
+        idle_state.sock.send_message(message::Pong(nonce)));
     }
     message::Pong(_) => {}
   }
