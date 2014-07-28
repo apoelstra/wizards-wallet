@@ -109,7 +109,7 @@ rpc_calls!{
       0 => {
         let blockchain = idle_state.blockchain.read();
         // Subtract 1 from the hash since the genesis counts as block 0
-        Ok(json::Number(blockchain.iter(blockchain.genesis_hash()).count() as f64 - 1))
+        Ok(json::Number(blockchain.iter(blockchain.genesis_hash()).count() as f64 - 1.0))
       }
       1 => {
         use serialize::hex::FromHex;
@@ -123,7 +123,7 @@ rpc_calls!{
             let hash: IoResult<Sha256dHash> = Serializable::deserialize(hash.iter().rev().map(|n| *n));
             match hash {
               // Subtract 1 from the hash since the genesis counts as block 0
-              Ok(hash) => Ok(json::Number(blockchain.iter(hash).count() as f64 - 1)),
+              Ok(hash) => Ok(json::Number(blockchain.iter(hash).count() as f64 - 1.0)),
               Err(_) => Err(standard_error(InvalidParams,
                                            Some(json::String(format!("Hash must be 64-character hex string, not {}", hex_hash)))))
             }
