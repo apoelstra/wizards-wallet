@@ -13,6 +13,11 @@
  */
 
 //! # Constants
+//!
+//! Defines compile-time constants which determine operation of the wallet.
+//! As a general rule, anything in here ought to be a user-configurable
+//! option, and is on the TODO list.
+//!
 
 /// The number of blocks to request at once during UTXO sync
 pub static UTXO_SYNC_N_BLOCKS: uint = 500;

@@ -12,6 +12,10 @@
  * If not, see <http://creativecommons.org/publicdomain/zero/1.0/>.
  */
 
+//! # Bitcoin Daemon
+//!
+//! Main network listener and idle loop.
+
 use std::io::IoResult;
 use std::io::timer::Timer;
 use std::path::posix::Path;
@@ -38,12 +42,14 @@ use constants::UTXO_SYNC_N_BLOCKS;
 use constants::SAVE_FREQUENCY;
 use rpc_server::handle_rpc;
 
-/// We use this IdleState structure to avoid having Option<T>
-/// on some stuff that isn't available during bootstrap.
+/// Data used by an idling wallet. This is constructed piecemeal during
+/// startup.
 pub struct IdleState {
   sock: Socket,
   net_chan: Receiver<NetworkMessage>,
+  /// Mutex for blockchain access
   pub blockchain: Arc<RWLock<Blockchain>>,
+  /// Mutex for UTXO set access
   pub utxo_set: Arc<RWLock<UtxoSet>>
 }
 
@@ -56,12 +62,19 @@ enum StartupState {
   Idle(IdleState)
 }
 
+/// The main Bitcoin network listener structure
 pub struct Bitcoind {
+  /// Network identifier
   network: Network,
+  /// Network address of the single currently-supported peer
   peer_address: String,
+  /// Network port of the single peer
   peer_port: u16,
+  /// Receiver on which RPC commands come in
   rpc_rx: Receiver<(jsonrpc::Request, Sender<jsonrpc::JsonResult<json::Json>>)>,
+  /// Path to the user's disk blockchain cache
   blockchain_path: Path,
+  /// Path to the user's disk UTXO set cache
   utxo_set_path: Path
 }
 
@@ -86,6 +99,7 @@ macro_rules! with_next_message(
 )
 
 impl Bitcoind {
+  /// Constructor
   pub fn new(peer_address: &str, peer_port: u16, network: Network,
              rpc_rx: Receiver<(jsonrpc::Request, Sender<jsonrpc::JsonResult<json::Json>>)>,
              blockchain_path: Path, utxo_set_path: Path) -> Bitcoind {
@@ -202,18 +216,19 @@ impl Bitcoind {
             }
             // Loop through blockchain for new data
             let last_hash = utxo_set.last_hash();
-            for (count, node) in blockchain.iter(last_hash).enumerate().skip(1) {
+            let mut iter = blockchain.iter(last_hash).enumerate().skip(1).peekable();
+            for (count, node) in iter {
               cache.push(Inventory { inv_type: InvBlock, hash: node.block.header.bitcoin_hash() });
 
               // Every so often, send a new message
-              if count % UTXO_SYNC_N_BLOCKS == 0 {
-                println!("UTXO sync: height {} n_utxos {}", count, utxo_set.n_utxos());
+              if count % UTXO_SYNC_N_BLOCKS == 0 || iter.is_empty() {
+                println!("UTXO sync: n_blocks {} n_utxos {}", count, utxo_set.n_utxos());
                 consume_err("UTXO sync: failed to send `getdata` message",
                   idle_state.sock.send_message(message::GetData(cache.clone())));
 
                 let mut block_count = 0;
                 let mut recv_data = PatriciaTree::new();
-                while block_count < UTXO_SYNC_N_BLOCKS {
+                while block_count < cache.len() {
                   with_next_message!(idle_state.net_chan.recv(),
                     message::Block(block) => {
                       recv_data.insert(&block.header.bitcoin_hash().as_uint128(), 128, block);
@@ -393,13 +408,17 @@ fn idle_message(idle_state: &mut IdleState, message: NetworkMessage) {
       let mut lock = idle_state.blockchain.write();
       println!("Received block: {:x}", block.header.bitcoin_hash());
       if lock.get_block(block.header.prev_blockhash).is_some() {
+        let mut utxo_lock = idle_state.utxo_set.write();
         // non-orphan, add it
         println!("Received non-orphan, adding to blockchain...");
+        if !utxo_lock.update(&block) {
+          println!("Failed to update UTXO set with block {}", block.header.bitcoin_hash());
+        }
         match lock.add_block(block) {
-           Err(e) => {
-             println!("Failed to add block: {}", e);
-           }
-           _ => {}
+          Err(e) => {
+            println!("Failed to add block: {}", e);
+          }
+          _ => {}
         }
         println!("Done adding block.");
       } else {

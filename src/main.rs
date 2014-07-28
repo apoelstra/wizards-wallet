@@ -62,10 +62,11 @@ use jsonrpc::server::JsonRpcServer;
 use http::server::Server;
 use user_data::{blockchain_path, utxo_set_path};
 
-mod bitcoind;
-mod constants;
-mod rpc_server;
-mod user_data;
+// Public exports to get documentation
+pub mod bitcoind;
+pub mod constants;
+pub mod rpc_server;
+pub mod user_data;
 
 /// Entry point
 fn main()
