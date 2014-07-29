@@ -16,13 +16,14 @@
 //!
 //! Functions and data to handle RPC calls
 
-use std::io::IoResult;
+use std::collections::TreeMap;
 use serialize::json;
+use serialize::json::ToJson;
 
 use bitcoin::network::serialize::Serializable;
 use bitcoin::util::hash::Sha256dHash;
 use jsonrpc;
-use jsonrpc::error::{standard_error, InvalidParams, MethodNotFound};
+use jsonrpc::error::{standard_error, Error, InvalidParams, MethodNotFound};
 use phf::PhfOrderedMap;
 
 use bitcoind::IdleState;
@@ -84,8 +85,6 @@ rpc_calls!{
   #[doc="Fetches a list of commands"]
   #[usage=""]
   pub fn help(_: &RpcCall, _: &mut IdleState, _: Vec<json::Json>) {
-    use std::collections::TreeMap;
-
     let mut ret = TreeMap::new();
     for call in RPC_CALLS.values() {
       let mut obj = TreeMap::new();
@@ -96,13 +95,50 @@ rpc_calls!{
     Ok(json::Object(ret))
   },
 
-  #[doc="Gets the current number of unspent outputs on the blockchain."]
-  #[usage=""]
-  pub fn getutxocount(_: &RpcCall, idle_state: &mut IdleState, _: Vec<json::Json>) {
-    Ok(json::Number(idle_state.utxo_set.read().n_utxos() as f64))
+  #[doc="Gets a specific block from the blockchain"]
+  #[usage="<hash>"]
+  pub fn getblock(rpc: &RpcCall, idle_state: &mut IdleState, params: Vec<json::Json>) {
+    match params.len() {
+      1 => {
+        use serialize::hex::FromHex;
+
+        let blockchain = idle_state.blockchain.read();
+        let hex_hash = try!(jsonrpc::decode::json_decode_string(&params[0]));
+        let hash_err = standard_error(InvalidParams,
+                                      Some(json::String(format!("Hash must be 64-character \
+                                                                 hex string, not {}", hex_hash ))));
+	let hash = try!(hex_hash.as_slice().from_hex().map_err(|_| hash_err.clone()));
+
+        // We reverse the iterator since the user will give us a big-endian string,
+        // while everything internal is little endian.
+        let hash: Sha256dHash = try!(Serializable::deserialize(hash.iter().rev().map(|n| *n)).map_err(|_| hash_err.clone()));
+        match blockchain.get_block(hash) {
+          Some(node) => {
+            let mut ret = TreeMap::new();
+            ret.insert("header".to_string(), node.block.header.to_json());
+            ret.insert("has_txdata".to_string(), json::Boolean(node.has_txdata));
+            if node.has_txdata {
+              ret.insert("transactions".to_string(), node.block.txdata.to_json());
+            }
+            Ok(json::Object(ret))
+          }
+          None => Err(bitcoin_json_error(BlockNotFound, Some(json::String(hex_hash)))),
+        }
+      }
+      _ => usage_error(rpc)
+    }
   },
 
-  #[doc="Gets the length of the longest chain."]
+  #[doc="Gets the current number of unspent outputs on the blockchain."]
+  #[usage=""]
+  pub fn getutxocount(rpc: &RpcCall, idle_state: &mut IdleState, params: Vec<json::Json>) {
+    match params.len() {
+      0 => Ok(json::Number(idle_state.utxo_set.read().n_utxos() as f64)),
+      _ => usage_error(rpc)
+    }
+  },
+
+  #[doc="Gets the length of the longest chain, starting from the given hash or genesis."]
   #[usage="[start hash]"]
   pub fn getblockcount(rpc: &RpcCall, idle_state: &mut IdleState, params: Vec<json::Json>) {
     match params.len() {
@@ -116,23 +152,36 @@ rpc_calls!{
 
         let blockchain = idle_state.blockchain.read();
         let hex_hash = try!(jsonrpc::decode::json_decode_string(&params[0]));
-        match hex_hash.as_slice().from_hex() {
-          Ok(hash) => {
-            // We reverse the iterator since the user will give us a big-endian string,
-            // while everything internal is little endian.
-            let hash: IoResult<Sha256dHash> = Serializable::deserialize(hash.iter().rev().map(|n| *n));
-            match hash {
-              // Subtract 1 from the hash since the genesis counts as block 0
-              Ok(hash) => Ok(json::Number(blockchain.iter(hash).count() as f64 - 1.0)),
-              Err(_) => Err(standard_error(InvalidParams,
-                                           Some(json::String(format!("Hash must be 64-character hex string, not {}", hex_hash)))))
-            }
-          }
-          Err(_) => Err(standard_error(InvalidParams,
-                                       Some(json::String(format!("Hash must be 64-character hex string, not {}", hex_hash)))))
+        let hash_err = standard_error(InvalidParams,
+                                      Some(json::String(format!("Hash must be 64-character \
+                                                                 hex string, not {}", hex_hash ))));
+
+        let hash = try!(hex_hash.as_slice().from_hex().map_err(|_| hash_err.clone()));
+        // We reverse the iterator since the user will give us a big-endian string,
+        // while everything internal is little endian.
+        let hash: Sha256dHash = try!(Serializable::deserialize(hash.iter().rev().map(|n| *n)).map_err(|_| hash_err.clone()));
+        // Subtract 1 from the hash since the genesis counts as block 0
+        match blockchain.iter(hash).count() {
+          0 => Err(bitcoin_json_error(BlockNotFound, Some(json::String(hex_hash)))),
+          n => Ok(json::Number(n as f64 - 1.0)),
         }
       }
       _ => usage_error(rpc)
+    }
+  }
+}
+
+enum BitcoinJsonError {
+  BlockNotFound
+}
+
+/// Create a standard error responses
+fn bitcoin_json_error(code: BitcoinJsonError, data: Option<json::Json>) -> Error {
+  match code {
+    BlockNotFound => Error {
+      code: -1,
+      message: "Block not found".to_string(),
+      data: data
     }
   }
 }
