@@ -53,14 +53,13 @@ extern crate http;
 extern crate jsonrpc;
 #[phase(plugin)] extern crate phf_mac;
 extern crate phf;
+extern crate toml;
 extern crate xdg;
-
-use std::io::timer;
 
 use bitcoind::Bitcoind;
 use jsonrpc::server::JsonRpcServer;
 use http::server::Server;
-use user_data::{blockchain_path, utxo_set_path};
+use user_data::{blockchain_path, utxo_set_path, config_path, load_configuration};
 
 // Public exports to get documentation
 pub mod bitcoind;
@@ -73,31 +72,37 @@ fn main()
 {
   println!("Starting the Wizards' Wallet");
 
-  // Connect to bitcoind
-  let network = bitcoin::network::constants::Bitcoin;
-  let (jsonrpc, rpc_rx) = JsonRpcServer::new();
-  let mut bitcoind = Bitcoind::new("127.0.0.1", 8333,
-                                   network, rpc_rx,
-                                   blockchain_path(network),
-                                   utxo_set_path(network));
-  // Spawn the RPC server
-  spawn (proc() {
-    println!("Starting JSON RPC server...");
-    jsonrpc.serve_forever();
-    println!("JSON RPC server shut down.");
-  });
-  // Loop until we get a successful connection
-  loop {
-    match bitcoind.listen() {
-      Err(e) => {
-        println!("Got error {:}, trying to connect again...", e);
-        timer::sleep(1000);
+  let config = match load_configuration(&config_path()) {
+      Some(config) => config,
+      None => { println!("Failed to load configuration. Shutting down."); return; }
+    };
+
+  for (&network, config) in config.iter() {
+    println!("main: Starting a listener for {}", network);
+    // Connect to bitcoind
+    let (jsonrpc, rpc_rx) = JsonRpcServer::new();
+    let bitcoind = Bitcoind::new(config.peer_addr.as_slice(),
+                                 config.peer_port,
+                                 network, rpc_rx,
+                                 blockchain_path(network),
+                                 utxo_set_path(network));
+    spawn(proc() {
+      let mut bitcoind = bitcoind;
+      match bitcoind.listen() {
+        Err(e) => {
+          println!("{}: Got error {:}, failed to listen.", network, e);
+        }
+        _ => {
+          // If we got a bitcoind up, start the RPC server
+          spawn (proc() {
+            println!("{}: Starting JSON RPC server...", network);
+            jsonrpc.serve_forever();
+            println!("{}: JSON RPC server shut down.", network);
+          });
+        }
       }
-      _ => { break; }
-    }
+    });
   }
+  println!("main: started all networks");
 }
-
-
-
 

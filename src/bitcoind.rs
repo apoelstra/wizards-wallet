@@ -129,20 +129,20 @@ impl Bitcoind {
         }
         // Load cached blockchain and utxo set from disk
         LoadFromDisk(sock, chan) => {
-          println!("Loading blockchain...");
+          println!("{}: Loading blockchain...", self.network);
           // Load blockchain from disk
           let blockchain = match Serializable::deserialize_file(&self.blockchain_path) {
             Ok(blockchain) => blockchain,
             Err(e) => {
-              println!("Failed to load blockchain: {:}, starting from genesis.", e);
+              println!("{}: Failed to load blockchain: {:}, starting from genesis.", self.network, e);
               Blockchain::new(self.network)
             }
           };
-          println!("Loading utxo set...");
+          println!("{}: Loading utxo set...", self.network);
           let utxo_set = match Serializable::deserialize_file(&self.utxo_set_path) {
             Ok(utxo_set) => utxo_set,
             Err(e) => {
-              println!("Failed to load UTXO set: {:}, starting from genesis.", e);
+              println!("{}: Failed to load UTXO set: {:}, starting from genesis.", self.network, e);
               UtxoSet::new(self.network, BLOCKCHAIN_N_FULL_BLOCKS)
             }
           };
@@ -162,7 +162,7 @@ impl Bitcoind {
           while !done {
             // Borrow the blockchain mutably
             let mut blockchain = idle_state.blockchain.write();
-            println!("Headers sync: last best tip {}", blockchain.best_tip_hash());
+            println!("{}: Headers sync: last best tip {}", self.network, blockchain.best_tip_hash());
 
             // Request headers
             consume_err("Headers sync: failed to send `headers` message",
@@ -176,7 +176,7 @@ impl Bitcoind {
                   for lone_header in headers.iter() {
                     match blockchain.add_header(lone_header.header) {
                       Err(e) => {
-                        println!("Headers sync: failed to add {}: {}", lone_header.header.bitcoin_hash(), e);
+                        println!("{}: Headers sync: failed to add {}: {}", self.network, lone_header.header.bitcoin_hash(), e);
                       }
                        _ => {}
                     }
@@ -193,7 +193,7 @@ impl Bitcoind {
             }
           }
           // Done!
-          println!("Done sync.");
+          println!("{}: Done sync.", self.network);
           SyncUtxoSet(idle_state, Vec::with_capacity(UTXO_SYNC_N_BLOCKS))
         },
         SyncUtxoSet(mut idle_state, mut cache) => {

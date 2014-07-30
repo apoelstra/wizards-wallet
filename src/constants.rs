@@ -28,3 +28,15 @@ pub static BLOCKCHAIN_N_FULL_BLOCKS: uint = 100;
 /// The save-to-disk frequency in ms
 pub static SAVE_FREQUENCY: uint = 3600 * 1000; // 1hr
 
+/// Default peer address
+pub static DEFAULT_PEER_ADDR: &'static str = "localhost";
+
+/// Default peer port
+pub static DEFAULT_PEER_PORT: u16 = 8333;
+
+/// Default RPC server address
+pub static DEFAULT_RPC_SERVER_ADDR: &'static str = "localhost";
+
+/// Default RPC server port
+pub static DEFAULT_RPC_SERVER_PORT: u16 = 8001;
+
