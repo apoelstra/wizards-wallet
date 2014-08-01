@@ -16,6 +16,7 @@
 //!
 //! Main network listener and idle loop.
 
+use std::io::{File, Open, Write};
 use std::io::IoResult;
 use std::io::timer::Timer;
 use std::sync::{Arc, RWLock};
@@ -26,12 +27,13 @@ use jsonrpc;
 use bitcoin::blockdata::blockchain::Blockchain;
 use bitcoin::blockdata::utxoset::UtxoSet;
 use bitcoin::network::constants::Network;
-use bitcoin::network::serialize::Serializable;
+use bitcoin::network::encodable::{ConsensusEncodable, ConsensusDecodable};
 use bitcoin::network::listener::Listener;
 use bitcoin::network::socket::Socket;
 use bitcoin::network::message::NetworkMessage;
 use bitcoin::network::message;
 use bitcoin::network::message_blockdata::{GetBlocksMessage, GetHeadersMessage, Inventory, InvBlock};
+use bitcoin::network::serialize::{BitcoinHash, RawEncoder, RawDecoder};
 use bitcoin::util::patricia_tree::PatriciaTree;
 use bitcoin::util::misc::consume_err;
 use bitcoin::util::hash::zero_hash;
@@ -119,7 +121,8 @@ impl Bitcoind {
         LoadFromDisk(sock, chan) => {
           println!("{}: Loading blockchain...", self.config.network);
           // Load blockchain from disk
-          let blockchain = match Serializable::deserialize_file(&self.config.blockchain_path) {
+          let mut decoder = RawDecoder::new(File::open(&self.config.blockchain_path));
+          let blockchain = match ConsensusDecodable::consensus_decode(&mut decoder) {
             Ok(blockchain) => blockchain,
             Err(e) => {
               println!("{}: Failed to load blockchain: {:}, starting from genesis.", self.config.network, e);
@@ -127,7 +130,9 @@ impl Bitcoind {
             }
           };
           println!("{}: Loading utxo set...", self.config.network);
-          let utxo_set = match Serializable::deserialize_file(&self.config.utxo_set_path) {
+          // Load UTXO set from disk
+          let mut decoder = RawDecoder::new(File::open(&self.config.utxo_set_path));
+          let utxo_set = match ConsensusDecodable::consensus_decode(&mut decoder) {
             Ok(utxo_set) => utxo_set,
             Err(e) => {
               println!("{}: Failed to load UTXO set: {:}, starting from genesis.", self.config.network, e);
@@ -197,16 +202,16 @@ impl Bitcoind {
 
             // Unwind any reorg'd blooks
             for block in blockchain.rev_stale_iter(last_hash) {
-              println!("Rewinding stale block {}", block.header.bitcoin_hash());
+              println!("Rewinding stale block {}", block.bitcoin_hash());
               if !utxo_set.rewind(block) {
-                println!("Failed to rewind stale block {}", block.header.bitcoin_hash());
+                println!("Failed to rewind stale block {}", block.bitcoin_hash());
               }
             }
             // Loop through blockchain for new data
             let last_hash = utxo_set.last_hash();
             let mut iter = blockchain.iter(last_hash).enumerate().skip(1).peekable();
             for (count, node) in iter {
-              cache.push(Inventory { inv_type: InvBlock, hash: node.block.header.bitcoin_hash() });
+              cache.push(Inventory { inv_type: InvBlock, hash: node.block.bitcoin_hash() });
 
               // Every so often, send a new message
               if count % UTXO_SYNC_N_BLOCKS == 0 || iter.is_empty() {
@@ -219,7 +224,7 @@ impl Bitcoind {
                 while block_count < cache.len() {
                   with_next_message!(idle_state.net_chan.recv(),
                     message::Block(block) => {
-                      recv_data.insert(&block.header.bitcoin_hash().as_uint128(), 128, block);
+                      recv_data.insert(&block.bitcoin_hash().into_uint128(), 128, block);
                       block_count += 1;
                     }
                     message::NotFound(_) => {
@@ -234,11 +239,11 @@ impl Bitcoind {
                   )
                 }
                 for recv_inv in cache.iter() {
-                  let block_opt = recv_data.lookup(&recv_inv.hash.as_uint128(), 128);
+                  let block_opt = recv_data.lookup(&recv_inv.hash.into_uint128(), 128);
                   match block_opt {
                     Some(block) => {
                       if !utxo_set.update(block) {
-                        println!("Failed to update UTXO set with block {}", block.header.bitcoin_hash());
+                        println!("Failed to update UTXO set with block {}", block.bitcoin_hash());
                         failed = true;
                       }
                     }
@@ -265,10 +270,10 @@ impl Bitcoind {
                 if n < BLOCKCHAIN_N_FULL_BLOCKS {
                   if !node.has_txdata {
                     inv_to_add_data.push(Inventory { inv_type: InvBlock,
-                                                     hash: node.block.header.bitcoin_hash() });
+                                                     hash: node.block.bitcoin_hash() });
                   }
                 } else if node.has_txdata {
-                  hashes_to_drop_data.push(node.block.header.bitcoin_hash());
+                  hashes_to_drop_data.push(node.block.bitcoin_hash());
                 }
               }
             }
@@ -290,7 +295,7 @@ impl Bitcoind {
               while block_count < inv_to_add_data.len() {
                 with_next_message!(idle_state.net_chan.recv(),
                   message::Block(block) => {
-                    println!("Adding blockdata for {}", block.header.bitcoin_hash());
+                    println!("Adding blockdata for {}", block.bitcoin_hash());
                     match blockchain.add_txdata(block) {
                       Err(e) => { println!("Failed to add txdata: {}", e); }
                       _ => {}
@@ -342,7 +347,8 @@ impl Bitcoind {
             {
               let blockchain = bc_arc.read();
               println!("Saving blockchain...");
-              match blockchain.serialize_file(&blockchain_path) {
+              let mut encoder = RawEncoder::new(File::open_mode(&blockchain_path, Open, Write));
+              match blockchain.consensus_encode(&mut encoder) {
                 Ok(()) => { println!("Successfully saved blockchain.") },
                 Err(e) => { println!("failed to write blockchain: {:}", e); }
               }
@@ -352,7 +358,8 @@ impl Bitcoind {
             {
               let utxo_set = us_arc.read();
               println!("Saving UTXO set...");
-              match utxo_set.serialize_file(&utxo_set_path) {
+              let mut encoder = RawEncoder::new(File::open_mode(&utxo_set_path, Open, Write));
+              match utxo_set.consensus_encode(&mut encoder) {
                 Ok(()) => { println!("Successfully saved UTXO set.") },
                 Err(e) => { println!("failed to write UTXO set: {:}", e); }
               }
@@ -394,13 +401,13 @@ fn idle_message(idle_state: &mut IdleState, message: NetworkMessage) {
     }
     message::Block(block) => {
       let mut lock = idle_state.blockchain.write();
-      println!("Received block: {:x}", block.header.bitcoin_hash());
+      println!("Received block: {:x}", block.bitcoin_hash());
       if lock.get_block(block.header.prev_blockhash).is_some() {
         let mut utxo_lock = idle_state.utxo_set.write();
         // non-orphan, add it
         println!("Received non-orphan, adding to blockchain...");
         if !utxo_lock.update(&block) {
-          println!("Failed to update UTXO set with block {}", block.header.bitcoin_hash());
+          println!("Failed to update UTXO set with block {}", block.bitcoin_hash());
         }
         match lock.add_block(block) {
           Err(e) => {
