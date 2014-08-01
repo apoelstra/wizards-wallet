@@ -18,7 +18,6 @@
 
 use std::io::IoResult;
 use std::io::timer::Timer;
-use std::path::posix::Path;
 use std::sync::{Arc, RWLock};
 use serialize::json;
 
@@ -41,6 +40,7 @@ use constants::BLOCKCHAIN_N_FULL_BLOCKS;
 use constants::UTXO_SYNC_N_BLOCKS;
 use constants::SAVE_FREQUENCY;
 use rpc_server::handle_rpc;
+use user_data::NetworkConfig;
 
 /// Data used by an idling wallet. This is constructed piecemeal during
 /// startup.
@@ -64,18 +64,10 @@ enum StartupState {
 
 /// The main Bitcoin network listener structure
 pub struct Bitcoind {
-  /// Network identifier
-  network: Network,
-  /// Network address of the single currently-supported peer
-  peer_address: String,
-  /// Network port of the single peer
-  peer_port: u16,
+  /// Configuration for this network
+  config: NetworkConfig,
   /// Receiver on which RPC commands come in
   rpc_rx: Receiver<(jsonrpc::Request, Sender<jsonrpc::JsonResult<json::Json>>)>,
-  /// Path to the user's disk blockchain cache
-  blockchain_path: Path,
-  /// Path to the user's disk UTXO set cache
-  utxo_set_path: Path
 }
 
 macro_rules! with_next_message(
@@ -100,16 +92,12 @@ macro_rules! with_next_message(
 
 impl Bitcoind {
   /// Constructor
-  pub fn new(peer_address: &str, peer_port: u16, network: Network,
-             rpc_rx: Receiver<(jsonrpc::Request, Sender<jsonrpc::JsonResult<json::Json>>)>,
-             blockchain_path: Path, utxo_set_path: Path) -> Bitcoind {
+  pub fn new(config: NetworkConfig,
+             rpc_rx: Receiver<(jsonrpc::Request, Sender<jsonrpc::JsonResult<json::Json>>)>)
+             -> Bitcoind {
     Bitcoind {
-      peer_address: String::from_str(peer_address),
-      peer_port: peer_port,
-      network: network,
-      rpc_rx: rpc_rx,
-      blockchain_path: blockchain_path,
-      utxo_set_path: utxo_set_path
+      config: config,
+      rpc_rx: rpc_rx
     }
   }
 
@@ -129,21 +117,21 @@ impl Bitcoind {
         }
         // Load cached blockchain and utxo set from disk
         LoadFromDisk(sock, chan) => {
-          println!("{}: Loading blockchain...", self.network);
+          println!("{}: Loading blockchain...", self.config.network);
           // Load blockchain from disk
-          let blockchain = match Serializable::deserialize_file(&self.blockchain_path) {
+          let blockchain = match Serializable::deserialize_file(&self.config.blockchain_path) {
             Ok(blockchain) => blockchain,
             Err(e) => {
-              println!("{}: Failed to load blockchain: {:}, starting from genesis.", self.network, e);
-              Blockchain::new(self.network)
+              println!("{}: Failed to load blockchain: {:}, starting from genesis.", self.config.network, e);
+              Blockchain::new(self.config.network)
             }
           };
-          println!("{}: Loading utxo set...", self.network);
-          let utxo_set = match Serializable::deserialize_file(&self.utxo_set_path) {
+          println!("{}: Loading utxo set...", self.config.network);
+          let utxo_set = match Serializable::deserialize_file(&self.config.utxo_set_path) {
             Ok(utxo_set) => utxo_set,
             Err(e) => {
-              println!("{}: Failed to load UTXO set: {:}, starting from genesis.", self.network, e);
-              UtxoSet::new(self.network, BLOCKCHAIN_N_FULL_BLOCKS)
+              println!("{}: Failed to load UTXO set: {:}, starting from genesis.", self.config.network, e);
+              UtxoSet::new(self.config.network, BLOCKCHAIN_N_FULL_BLOCKS)
             }
           };
 
@@ -162,7 +150,7 @@ impl Bitcoind {
           while !done {
             // Borrow the blockchain mutably
             let mut blockchain = idle_state.blockchain.write();
-            println!("{}: Headers sync: last best tip {}", self.network, blockchain.best_tip_hash());
+            println!("{}: Headers sync: last best tip {}", self.config.network, blockchain.best_tip_hash());
 
             // Request headers
             consume_err("Headers sync: failed to send `headers` message",
@@ -176,7 +164,7 @@ impl Bitcoind {
                   for lone_header in headers.iter() {
                     match blockchain.add_header(lone_header.header) {
                       Err(e) => {
-                        println!("{}: Headers sync: failed to add {}: {}", self.network, lone_header.header.bitcoin_hash(), e);
+                        println!("{}: Headers sync: failed to add {}: {}", self.config.network, lone_header.header.bitcoin_hash(), e);
                       }
                        _ => {}
                     }
@@ -193,7 +181,7 @@ impl Bitcoind {
             }
           }
           // Done!
-          println!("{}: Done sync.", self.network);
+          println!("{}: Done sync.", self.config.network);
           SyncUtxoSet(idle_state, Vec::with_capacity(UTXO_SYNC_N_BLOCKS))
         },
         SyncUtxoSet(mut idle_state, mut cache) => {
@@ -347,8 +335,8 @@ impl Bitcoind {
         SaveToDisk(idle_state) => {
           let bc_arc = idle_state.blockchain.clone();
           let us_arc = idle_state.utxo_set.clone();
-          let blockchain_path = self.blockchain_path.clone();
-          let utxo_set_path = self.utxo_set_path.clone();
+          let blockchain_path = self.config.blockchain_path.clone();
+          let utxo_set_path = self.config.utxo_set_path.clone();
           spawn(proc() {
             // Lock the blockchain for reading while we are saving it.
             {
@@ -380,15 +368,15 @@ impl Bitcoind {
 
 impl Listener for Bitcoind {
   fn peer<'a>(&'a self) -> &'a str {
-    self.peer_address.as_slice()
+    self.config.peer_addr.as_slice()
   }
 
   fn port(&self) -> u16 {
-    self.peer_port
+    self.config.peer_port
   }
 
   fn network(&self) -> Network {
-    self.network
+    self.config.network
   }
 }
 

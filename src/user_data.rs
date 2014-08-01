@@ -18,12 +18,11 @@
 //!
 
 use std::collections::HashMap;
-use std::collections::hashmap::Entries;
-use std::default::Default;
 use std::io::{File, IoResult, IoError, InvalidInput, FileNotFound};
 use std::path::posix::Path;
 use std::str::from_utf8;
-use serialize::{Decoder, Encoder, Decodable, Encodable};
+use std::vec::MoveItems;
+use serialize::Decoder;
 
 use xdg;
 
@@ -54,8 +53,9 @@ pub fn utxo_set_path(network: Network) -> Path {
 }
 
 /// User's global program configuration for a specific network
-#[deriving(Encodable, Show)]
 pub struct NetworkConfig {
+  /// The network this configuration is for
+  pub network: Network,
   /// Address to connect to the network peer on
   pub peer_addr: String,
   /// Port to connect to the network peer on
@@ -63,69 +63,36 @@ pub struct NetworkConfig {
   /// Address to listen for RPC requests on
   pub rpc_server_addr: String,
   /// Port to listen for RPC requests on
-  pub rpc_server_port: u16
+  pub rpc_server_port: u16,
+  /// Whether to operate a coinjoin server as part of RPC
+  pub coinjoin_on: bool,
+  /// Path to the on-disk blockchain cache
+  pub blockchain_path: Path,
+  /// Path to the on-disk UTXO set cache
+  pub utxo_set_path: Path
 }
 
-impl<E, D:Decoder<E>> Decodable<D, E> for NetworkConfig {
-  fn decode(d: &mut D) -> Result<NetworkConfig, E> {
-    use constants::DEFAULT_PEER_ADDR;
-    use constants::DEFAULT_PEER_PORT;
-    use constants::DEFAULT_RPC_SERVER_ADDR;
-    use constants::DEFAULT_RPC_SERVER_PORT;
-
-    let peer_addr: Option<String> = try!(d.read_struct_field("peer_addr", 0u,
-                                                             Decodable::decode));
-    let peer_port: Option<u16> = try!(d.read_struct_field("peer_port", 1u,
-                                                          Decodable::decode));
-    let rpc_server_addr: Option<String> = try!(d.read_struct_field("rpc_server_addr", 2u,
-                                                                   Decodable::decode));
-    let rpc_server_port: Option<u16> = try!(d.read_struct_field("rpc_server_port", 3u,
-                                                                Decodable::decode));
-
-    Ok(NetworkConfig {
-      peer_addr: peer_addr.unwrap_or(DEFAULT_PEER_ADDR.to_string()),
-      peer_port: peer_port.unwrap_or(DEFAULT_PEER_PORT),
-      rpc_server_addr: rpc_server_addr.unwrap_or(DEFAULT_RPC_SERVER_ADDR.to_string()),
-      rpc_server_port: rpc_server_port.unwrap_or(DEFAULT_RPC_SERVER_PORT)
-    })
-  }
+#[deriving(Decodable)]
+struct TomlNetworkConfig {
+  peer_addr: Option<String>,
+  peer_port: Option<u16>,
+  rpc_server_addr: Option<String>,
+  rpc_server_port: Option<u16>,
+  coinjoin_on: Option<bool>,
+  blockchain_path: Option<Path>,
+  utxo_set_path: Option<Path>
 }
 
-#[deriving(Show)]
 /// A list of user configuration for all networks
-pub struct Config(HashMap<Network, NetworkConfig>);
+pub struct Config(Vec<NetworkConfig>);
+
+type TomlConfig = HashMap<Network, TomlNetworkConfig>;
 
 impl Config {
   /// Returns a (key, value) iterator over all networks and their configurations
-  pub fn iter<'a>(&'a self) -> Entries<'a, Network, NetworkConfig> {
-    let &Config(ref data) = self;
-    data.iter()
-  }
-}
-
-impl Default for Config {
-  fn default() -> Config {
-    let mut ret = HashMap::new();
-    ret.insert(Bitcoin, NetworkConfig {
-        peer_addr: "localhost".to_string(),
-        peer_port: 8333,
-        rpc_server_addr: "localhost".to_string(),
-        rpc_server_port: 8001
-      });
-    Config(ret)
-  }
-}
-
-impl<E, D:Decoder<E>> Decodable<D, E> for Config {
-  fn decode(d: &mut D) -> Result<Config, E> {
-    Ok(Config(try!(Decodable::decode(d))))
-  }
-}
-
-impl<E, S:Encoder<E>> Encodable<S, E> for Config {
-  fn encode(&self, s: &mut S) -> Result<(), E> {
-    let &Config(ref data) = self;
-    data.encode(s)
+  pub fn move_iter(self) -> MoveItems<NetworkConfig> {
+    let Config(data) = self;
+    data.move_iter()
   }
 }
 
@@ -137,7 +104,8 @@ fn read_configuration(path: &Path) -> IoResult<Config> {
   let config_data = try!(config_file.read_to_end());
   let contents = from_utf8(config_data.as_slice());
 
-  match contents {
+  // Translate the Toml into a hashmap
+  let decode: TomlConfig = match contents {
     Some(contents) => {
       let mut parser = Parser::new(contents.as_slice());
       let table = match parser.parse() {
@@ -162,37 +130,72 @@ fn read_configuration(path: &Path) -> IoResult<Config> {
           });
         }
       };
-println!("table {}", table);
       let mut d = Decoder::new(Table(table));
       let res = Decodable::decode(&mut d);
-println!("res {}", res);
-      res.map_err(|err| IoError {
+      try!(res.map_err(|err| IoError {
           kind: InvalidInput,
           desc: "TOML parser error",
           detail: Some(err.to_string())
-        })
+        }))
     },
-    None => Err(IoError {
-      kind: InvalidInput,
-      desc: "Configuration file must be valid UTF8",
-      detail: None
-    })
+    None => {
+      return Err(IoError {
+        kind: InvalidInput,
+        desc: "Configuration file must be valid UTF8",
+        detail: None
+      });
+    }
+  };
+
+  // Move the hashmap into something nicer to use, with missing fields
+  // filled in by defaults
+  let mut ret = Vec::with_capacity(decode.len());
+  for (network, toml_config) in decode.move_iter() {
+    use constants::DEFAULT_PEER_ADDR;
+    use constants::DEFAULT_PEER_PORT;
+    use constants::DEFAULT_RPC_SERVER_ADDR;
+    use constants::DEFAULT_RPC_SERVER_PORT;
+
+    ret.push(NetworkConfig {
+      network: network,
+      peer_addr: toml_config.peer_addr.unwrap_or(DEFAULT_PEER_ADDR.to_string()),
+      peer_port: toml_config.peer_port.unwrap_or(DEFAULT_PEER_PORT),
+      rpc_server_addr: toml_config.rpc_server_addr.unwrap_or(DEFAULT_RPC_SERVER_ADDR.to_string()),
+      rpc_server_port: toml_config.rpc_server_port.unwrap_or(DEFAULT_RPC_SERVER_PORT),
+      coinjoin_on: toml_config.coinjoin_on.unwrap_or(false),
+      blockchain_path: toml_config.blockchain_path.unwrap_or(blockchain_path(network)),
+      utxo_set_path: toml_config.utxo_set_path.unwrap_or(utxo_set_path(network))
+    });
   }
+  Ok(Config(ret))
 }
 
 /// Parses a configuration file and returns its bounty
 pub fn load_configuration(path: &Path) -> Option<Config> {
   // Try to parse the user's config file
   match read_configuration(path) {
-    Ok(res) => {
-      println!("got config: {}", res);
-      Some(res)
-    },
+    Ok(res) => Some(res),
     Err(err) => {
       // For file not found, we use the default configuration...
       if err.kind == FileNotFound {
+        use constants::DEFAULT_PEER_ADDR;
+        use constants::DEFAULT_PEER_PORT;
+        use constants::DEFAULT_RPC_SERVER_ADDR;
+        use constants::DEFAULT_RPC_SERVER_PORT;
+
         println!("Did not find {}, using default configuration.", path.display());
-        Some(Default::default())
+
+        Some(Config(vec![
+          NetworkConfig {
+            network: Bitcoin,
+            peer_addr: DEFAULT_PEER_ADDR.to_string(),
+            peer_port: DEFAULT_PEER_PORT,
+            rpc_server_addr: DEFAULT_RPC_SERVER_ADDR.to_string(),
+            rpc_server_port: DEFAULT_RPC_SERVER_PORT,
+            coinjoin_on: false,
+            blockchain_path: blockchain_path(Bitcoin),
+            utxo_set_path: utxo_set_path(Bitcoin)
+          }]))
       }
       // But for anything else, the user must've made a mistake. Better to do nothing.
       else {

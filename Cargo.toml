@@ -8,10 +8,10 @@ authors = ["Andrew Poelstra <apoelstra@wpsoftware.net>"]
 name = "wizards-wallet"
 
 [dependencies.bitcoin]
-git = "https://github.com/apoelstra/bitcoin-rs.git"
+git = "https://github.com/apoelstra/rust-bitcoin.git"
 
 [dependencies.jsonrpc]
-git = "https://github.com/apoelstra/jsonrpc-rs.git"
+git = "https://github.com/apoelstra/rust-jsonrpc.git"
 
 [dependencies.phf]
 git = "https://github.com/sfackler/rust-phf.git"

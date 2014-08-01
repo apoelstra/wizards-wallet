@@ -59,10 +59,11 @@ extern crate xdg;
 use bitcoind::Bitcoind;
 use jsonrpc::server::JsonRpcServer;
 use http::server::Server;
-use user_data::{blockchain_path, utxo_set_path, config_path, load_configuration};
+use user_data::{config_path, load_configuration};
 
 // Public exports to get documentation
 pub mod bitcoind;
+pub mod coinjoin;
 pub mod constants;
 pub mod rpc_server;
 pub mod user_data;
@@ -77,15 +78,12 @@ fn main()
       None => { println!("Failed to load configuration. Shutting down."); return; }
     };
 
-  for (&network, config) in config.iter() {
+  for config in config.move_iter() {
+    let network = config.network;
     println!("main: Starting a listener for {}", network);
     // Connect to bitcoind
     let (jsonrpc, rpc_rx) = JsonRpcServer::new();
-    let bitcoind = Bitcoind::new(config.peer_addr.as_slice(),
-                                 config.peer_port,
-                                 network, rpc_rx,
-                                 blockchain_path(network),
-                                 utxo_set_path(network));
+    let bitcoind = Bitcoind::new(config, rpc_rx);
     spawn(proc() {
       let mut bitcoind = bitcoind;
       match bitcoind.listen() {
