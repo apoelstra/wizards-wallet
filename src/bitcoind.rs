@@ -198,13 +198,13 @@ impl Bitcoind {
             let mut utxo_set = idle_state.utxo_set.write();
 
             let last_hash = utxo_set.last_hash();
-            println!("Starting UTXO sync from {}", last_hash);
+            println!("{}: Starting UTXO sync from {}", self.config.network, last_hash);
 
             // Unwind any reorg'd blooks
             for block in blockchain.rev_stale_iter(last_hash) {
-              println!("Rewinding stale block {}", block.bitcoin_hash());
+              println!("{}: Rewinding stale block {}", self.config.network, block.bitcoin_hash());
               if !utxo_set.rewind(block) {
-                println!("Failed to rewind stale block {}", block.bitcoin_hash());
+                println!("{}: Failed to rewind stale block {}", self.config.network, block.bitcoin_hash());
               }
             }
             // Loop through blockchain for new data
@@ -215,7 +215,8 @@ impl Bitcoind {
 
               // Every so often, send a new message
               if count % UTXO_SYNC_N_BLOCKS == 0 || iter.is_empty() {
-                println!("UTXO sync: n_blocks {} n_utxos {}", count, utxo_set.n_utxos());
+                println!("{}: UTXO sync: n_blocks {} n_utxos {}",
+                         self.config.network, count, utxo_set.n_utxos());
                 consume_err("UTXO sync: failed to send `getdata` message",
                   idle_state.sock.send_message(message::GetData(cache.clone())));
 
@@ -228,7 +229,8 @@ impl Bitcoind {
                       block_count += 1;
                     }
                     message::NotFound(_) => {
-                      println!("UTXO sync: received `notfound` from sync peer, failing sync.");
+                      println!("{}: UTXO sync: received `notfound` from sync peer, failing sync.",
+                               self.config.network);
                       failed = true;
                       block_count += 1;
                     }
@@ -243,12 +245,14 @@ impl Bitcoind {
                   match block_opt {
                     Some(block) => {
                       if !utxo_set.update(block) {
-                        println!("Failed to update UTXO set with block {}", block.bitcoin_hash());
+                        println!("{}: Failed to update UTXO set with block {}",
+                                 self.config.network, block.bitcoin_hash());
                         failed = true;
                       }
                     }
                     None => {
-                      println!("Uh oh, requested block {} but didn't get it!", recv_inv.hash);
+                      println!("{}: Uh oh, requested block {} but didn't get it!",
+                               self.config.network, recv_inv.hash);
                       failed = true;
                     }
                   }
@@ -258,7 +262,8 @@ impl Bitcoind {
             }
           }
           if failed {
-            println!("Failed to sync UTXO set, trying to resync chain.");
+            println!("{}: Failed to sync UTXO set, trying to resync chain.",
+                     self.config.network);
             SyncBlockchain(idle_state)
           } else {
             // Now that we're done with reorgs, update our cached block data
@@ -284,9 +289,9 @@ impl Bitcoind {
               let mut blockchain = idle_state.blockchain.write();
               // Delete old block data
               for hash in hashes_to_drop_data.move_iter() {
-                println!("Dropping old blockdata for {}", hash);
+                println!("{}, Dropping old blockdata for {}", self.config.network, hash);
                 match blockchain.remove_txdata(hash) {
-                  Err(e) => { println!("Failed to remove txdata: {}", e); }
+                  Err(e) => { println!("{}: Failed to remove txdata: {}", self.config.network, e); }
                   _ => {}
                 }
               }
@@ -295,15 +300,16 @@ impl Bitcoind {
               while block_count < inv_to_add_data.len() {
                 with_next_message!(idle_state.net_chan.recv(),
                   message::Block(block) => {
-                    println!("Adding blockdata for {}", block.bitcoin_hash());
+                    println!("{}: Adding blockdata for {}", self.config.network, block.bitcoin_hash());
                     match blockchain.add_txdata(block) {
-                      Err(e) => { println!("Failed to add txdata: {}", e); }
+                      Err(e) => { println!("{}: Failed to add txdata: {}", self.config.network, e); }
                       _ => {}
                     }
                     block_count += 1;
                   }
                   message::NotFound(_) => {
-                    println!("Blockchain sync: received `notfound` on full blockdata, will not be able to handle reorgs past this block.");
+                    println!("{}: Blockchain sync: received `notfound` on full blockdata, \
+                              will not be able to handle reorgs past this block.", self.config.network);
                     block_count += 1;
                   }
                   message::Ping(nonce) => {
@@ -318,7 +324,7 @@ impl Bitcoind {
         },
         // Idle loop
         Idle(mut idle_state) => {
-          println!("Idling...");
+          println!("{}: Idling...", self.config.network);
           let saveout = nu_select!(
             message from idle_state.net_chan => {
               idle_message(&mut idle_state, message);
@@ -342,28 +348,27 @@ impl Bitcoind {
           let us_arc = idle_state.utxo_set.clone();
           let blockchain_path = self.config.blockchain_path.clone();
           let utxo_set_path = self.config.utxo_set_path.clone();
+          let network = self.config.network;
           spawn(proc() {
             // Lock the blockchain for reading while we are saving it.
             {
               let blockchain = bc_arc.read();
-              println!("Saving blockchain...");
+              println!("{}: Saving blockchain...", network);
               let mut encoder = RawEncoder::new(BufferedWriter::new(File::open_mode(&blockchain_path, Open, Write)));
               match blockchain.consensus_encode(&mut encoder) {
-                Ok(()) => { println!("Successfully saved blockchain.") },
-                Err(e) => { println!("failed to write blockchain: {:}", e); }
+                Ok(()) => { println!("{}: Successfully saved blockchain.", network) },
+                Err(e) => { println!("{}: Failed to write blockchain: {:}", network, e); }
               }
-              println!("Done saving blockchain.");
             }
             // Lock the UTXO set for reading while we are saving it.
             {
               let utxo_set = us_arc.read();
-              println!("Saving UTXO set...");
+              println!("{}: Saving UTXO set...", network);
               let mut encoder = RawEncoder::new(BufferedWriter::new(File::open_mode(&utxo_set_path, Open, Write)));
               match utxo_set.consensus_encode(&mut encoder) {
-                Ok(()) => { println!("Successfully saved UTXO set.") },
-                Err(e) => { println!("failed to write UTXO set: {:}", e); }
+                Ok(()) => { println!("{}: Successfully saved UTXO set.", network) },
+                Err(e) => { println!("{}: Failed to write UTXO set: {:}", network, e); }
               }
-              println!("Done saving UTXO set.");
             }
           });
           Idle(idle_state)

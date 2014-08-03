@@ -82,23 +82,30 @@ fn main()
     let network = config.network;
     println!("main: Starting a listener for {}", network);
     // Connect to bitcoind
-    let (jsonrpc, rpc_rx) = JsonRpcServer::new();
+    let (jsonrpc, rpc_rx) = match JsonRpcServer::new(config.rpc_server_addr.as_slice(),
+                                                     config.rpc_server_port) {
+      Err(e) => {
+        println!("{}: RPC server: {}, failed to start.", network, e);
+        break;
+      }
+      Ok(tup) => tup
+    };
+    // Start bitcoind
     let bitcoind = Bitcoind::new(config, rpc_rx);
     spawn(proc() {
       let mut bitcoind = bitcoind;
       match bitcoind.listen() {
         Err(e) => {
-          println!("{}: Got error {:}, failed to listen.", network, e);
+          println!("{}: Got error {:}, failed to start.", network, e);
         }
-        _ => {
-          // If we got a bitcoind up, start the RPC server
-          spawn (proc() {
-            println!("{}: Starting JSON RPC server...", network);
-            jsonrpc.serve_forever();
-            println!("{}: JSON RPC server shut down.", network);
-          });
-        }
+        _ => {}
       }
+    });
+    // Start the RPC server
+    spawn (proc() {
+      println!("{}: Starting JSON RPC server...", network);
+      jsonrpc.serve_forever();
+      println!("{}: JSON RPC server shut down.", network);
     });
   }
   println!("main: started all networks");
