@@ -16,7 +16,7 @@
 //!
 //! Main network listener and idle loop.
 
-use std::io::{File, Open, Write};
+use std::io::{File, Open, Write, BufferedReader, BufferedWriter};
 use std::io::IoResult;
 use std::io::timer::Timer;
 use std::sync::{Arc, RWLock};
@@ -121,7 +121,7 @@ impl Bitcoind {
         LoadFromDisk(sock, chan) => {
           println!("{}: Loading blockchain...", self.config.network);
           // Load blockchain from disk
-          let mut decoder = RawDecoder::new(File::open(&self.config.blockchain_path));
+          let mut decoder = RawDecoder::new(BufferedReader::new(File::open(&self.config.blockchain_path)));
           let blockchain = match ConsensusDecodable::consensus_decode(&mut decoder) {
             Ok(blockchain) => blockchain,
             Err(e) => {
@@ -131,7 +131,7 @@ impl Bitcoind {
           };
           println!("{}: Loading utxo set...", self.config.network);
           // Load UTXO set from disk
-          let mut decoder = RawDecoder::new(File::open(&self.config.utxo_set_path));
+          let mut decoder = RawDecoder::new(BufferedReader::new(File::open(&self.config.utxo_set_path)));
           let utxo_set = match ConsensusDecodable::consensus_decode(&mut decoder) {
             Ok(utxo_set) => utxo_set,
             Err(e) => {
@@ -347,7 +347,7 @@ impl Bitcoind {
             {
               let blockchain = bc_arc.read();
               println!("Saving blockchain...");
-              let mut encoder = RawEncoder::new(File::open_mode(&blockchain_path, Open, Write));
+              let mut encoder = RawEncoder::new(BufferedWriter::new(File::open_mode(&blockchain_path, Open, Write)));
               match blockchain.consensus_encode(&mut encoder) {
                 Ok(()) => { println!("Successfully saved blockchain.") },
                 Err(e) => { println!("failed to write blockchain: {:}", e); }
@@ -358,7 +358,7 @@ impl Bitcoind {
             {
               let utxo_set = us_arc.read();
               println!("Saving UTXO set...");
-              let mut encoder = RawEncoder::new(File::open_mode(&utxo_set_path, Open, Write));
+              let mut encoder = RawEncoder::new(BufferedWriter::new(File::open_mode(&utxo_set_path, Open, Write)));
               match utxo_set.consensus_encode(&mut encoder) {
                 Ok(()) => { println!("Successfully saved UTXO set.") },
                 Err(e) => { println!("failed to write UTXO set: {:}", e); }

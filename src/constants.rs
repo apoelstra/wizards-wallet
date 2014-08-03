@@ -26,7 +26,7 @@ pub static UTXO_SYNC_N_BLOCKS: uint = 500;
 pub static BLOCKCHAIN_N_FULL_BLOCKS: uint = 100;
 
 /// The save-to-disk frequency in ms
-pub static SAVE_FREQUENCY: uint = 3600 * 1000; // 1hr
+pub static SAVE_FREQUENCY: uint = 600 * 1000; // 10 minutes
 
 /// Default peer address
 pub static DEFAULT_PEER_ADDR: &'static str = "localhost";
