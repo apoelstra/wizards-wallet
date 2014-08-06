@@ -53,6 +53,7 @@ pub fn utxo_set_path(network: Network) -> Path {
 }
 
 /// User's global program configuration for a specific network
+#[deriving(Clone)]
 pub struct NetworkConfig {
   /// The network this configuration is for
   pub network: Network,
