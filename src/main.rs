@@ -42,11 +42,12 @@
 #![deny(unused_mut)]
 #![warn(missing_doc)]
 
+extern crate num;
 extern crate rand;
 extern crate rustrt;
+extern crate serialize;
 extern crate sync;
 extern crate time;
-extern crate serialize;
 
 #[phase(plugin,link)] extern crate bitcoin;
 extern crate http;

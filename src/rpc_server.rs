@@ -17,6 +17,7 @@
 //! Functions and data to handle RPC calls
 
 use std::collections::TreeMap;
+use std::time::Duration;
 use serialize::Decodable;
 use serialize::json;
 use serialize::json::ToJson;
@@ -169,8 +170,8 @@ rpc_calls!{
     match params.len() {
       3 => {
         let target: u64 = try!(decode_param(params[0].clone()));
-        let join_duration: uint = try!(decode_param(params[1].clone()));
-        let expiry_duration: uint = try!(decode_param(params[2].clone()));
+        let join_duration = Duration::milliseconds(try!(decode_param(params[1].clone())));
+        let expiry_duration = Duration::milliseconds(try!(decode_param(params[2].clone())));
 
         // Start session manager if we haven't
         if idle_state.coinjoin.is_none() {
