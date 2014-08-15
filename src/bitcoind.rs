@@ -16,16 +16,18 @@
 //!
 //! Main network listener and idle loop.
 
+use std::default::Default;
 use std::io::{File, Open, Write, BufferedReader, BufferedWriter};
 use std::io::IoResult;
 use std::io::timer::Timer;
 use std::sync::{Arc, RWLock};
+use std::time::Duration;
 use serialize::json;
 
 use jsonrpc;
 
 use bitcoin::blockdata::blockchain::Blockchain;
-use bitcoin::blockdata::utxoset::UtxoSet;
+use bitcoin::blockdata::utxoset::{UtxoSet, TxoValidation, ScriptValidation};
 use bitcoin::network::constants::Network;
 use bitcoin::network::encodable::{ConsensusEncodable, ConsensusDecodable};
 use bitcoin::network::listener::Listener;
@@ -36,7 +38,6 @@ use bitcoin::network::message_blockdata::{GetBlocksMessage, GetHeadersMessage, I
 use bitcoin::network::serialize::{BitcoinHash, RawEncoder, RawDecoder};
 use bitcoin::util::patricia_tree::PatriciaTree;
 use bitcoin::util::misc::consume_err;
-use bitcoin::util::hash::zero_hash;
 
 use coinjoin;
 use constants::BLOCKCHAIN_N_FULL_BLOCKS;
@@ -111,7 +112,7 @@ impl Bitcoind {
   /// Run the state machine
   pub fn listen(&mut self) -> IoResult<()> {
     let mut timer = Timer::new().unwrap();  // TODO: can this fail? what should we do?
-    let save_timer = timer.periodic(SAVE_FREQUENCY as u64);
+    let save_timer = timer.periodic(Duration::seconds(SAVE_FREQUENCY));
     let mut state = Init;
     // Eternal state machine loop
     loop {
@@ -170,7 +171,7 @@ impl Bitcoind {
             // Request headers
             consume_err("Headers sync: failed to send `headers` message",
               idle_state.sock.send_message(message::GetHeaders(
-                  GetHeadersMessage::new(blockchain.locator_hashes(), zero_hash()))));
+                  GetHeadersMessage::new(blockchain.locator_hashes(), Default::default()))));
             // Loop through received headers
             let mut received_headers = false;
             while !received_headers {
@@ -228,8 +229,8 @@ impl Bitcoind {
 
               // Every so often, send a new message
               if count % UTXO_SYNC_N_BLOCKS == 0 || iter.is_empty() {
-                println!("{}: UTXO sync: n_blocks {} n_utxos {}",
-                         idle_state.config.network, count, utxo_set.n_utxos());
+                println!("{}: UTXO sync: n_blocks {} n_utxos {} pruned {}",
+                         idle_state.config.network, count, utxo_set.n_utxos(), utxo_set.n_pruned());
                 consume_err("UTXO sync: failed to send `getdata` message",
                   idle_state.sock.send_message(message::GetData(cache.clone())));
 
@@ -257,10 +258,13 @@ impl Bitcoind {
                   let block_opt = recv_data.lookup(&recv_inv.hash.into_uint128(), 128);
                   match block_opt {
                     Some(block) => {
-                      if !utxo_set.update(block) {
-                        println!("{}: Failed to update UTXO set with block {}",
-                                 idle_state.config.network, block.bitcoin_hash());
-                        failed = true;
+                      match utxo_set.update(block, TxoValidation) {
+                        Ok(_) => {}
+                        Err(e) => {
+                          println!("{}: Failed to update UTXO set with block {}: {}",
+                                   idle_state.config.network, block.bitcoin_hash(), e);
+                          failed = true;
+                        }
                       }
                     }
                     None => {
@@ -428,9 +432,12 @@ fn idle_message(idle_state: &mut IdleState, message: NetworkMessage) {
         let mut utxo_lock = idle_state.utxo_set.write();
         // non-orphan, add it
         println!("{}, Received non-orphan, adding to blockchain...", idle_state.config.network);
-        if !utxo_lock.update(&block) {
-          println!("{}, Failed to update UTXO set with block {}",
-                   idle_state.config.network, block.bitcoin_hash());
+        match utxo_lock.update(&block, ScriptValidation) {
+          Ok(_) => {}
+          Err(e) => {
+            println!("{}, Failed to update UTXO set with block {}: {}",
+                     idle_state.config.network, block.bitcoin_hash(), e);
+          }
         }
         match lock.add_block(block) {
           Err(e) => {
