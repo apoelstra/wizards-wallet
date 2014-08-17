@@ -28,14 +28,14 @@ use serialize::json;
 use jsonrpc;
 
 use bitcoin::blockdata::blockchain::Blockchain;
-use bitcoin::blockdata::utxoset::{UtxoSet, TxoValidation, ScriptValidation};
+use bitcoin::blockdata::utxoset::{UtxoSet, ValidationLevel, TxoValidation, ScriptValidation};
 use bitcoin::network::constants::Network;
 use bitcoin::network::encodable::{ConsensusEncodable, ConsensusDecodable};
 use bitcoin::network::listener::Listener;
 use bitcoin::network::socket::Socket;
 use bitcoin::network::message::NetworkMessage;
 use bitcoin::network::message;
-use bitcoin::network::message_blockdata::{GetBlocksMessage, GetHeadersMessage, Inventory, InvBlock};
+use bitcoin::network::message_blockdata::{GetHeadersMessage, Inventory, InvBlock};
 use bitcoin::network::serialize::{BitcoinHash, RawEncoder, RawDecoder};
 use bitcoin::util::patricia_tree::PatriciaTree;
 use bitcoin::util::misc::consume_err;
@@ -63,7 +63,7 @@ pub struct IdleState {
 
 enum WalletAction {
   SyncBlockchain,
-  SyncUtxoSet,
+  SyncUtxoSet(ValidationLevel),
   SaveToDisk,
 }
 
@@ -150,7 +150,7 @@ impl Bitcoind {
 
     // Eternal state machine loop
     state_queue.push(SyncBlockchain);
-    state_queue.push(SyncUtxoSet);
+    state_queue.push(SyncUtxoSet(TxoValidation));  // for initial sync only do TXO validation
     state_queue.push(SaveToDisk);
     loop {
       match state_queue.pop_front() {
@@ -196,7 +196,7 @@ impl Bitcoind {
           // Done!
           println!("{}: Done sync.", idle_state.config.network);
         },
-        Some(SyncUtxoSet) => {
+        Some(SyncUtxoSet(validation_level)) => {
           let mut failed = false;
           let mut cache = Vec::with_capacity(UTXO_SYNC_N_BLOCKS);
           // Ugh these scopes are ugly. Can't wait for non-lexically-scoped borrows!
@@ -256,7 +256,7 @@ impl Bitcoind {
                   let block_opt = recv_data.lookup(&recv_inv.hash.into_uint128(), 128);
                   match block_opt {
                     Some(block) => {
-                      match utxo_set.update(block, TxoValidation) {
+                      match utxo_set.update(block, validation_level) {
                         Ok(_) => {}
                         Err(e) => {
                           println!("{}: Failed to update UTXO set with block {}: {}",
@@ -280,7 +280,7 @@ impl Bitcoind {
             println!("{}: Failed to sync UTXO set, will resync chain and try again.",
                      idle_state.config.network);
             state_queue.push(SyncBlockchain);
-            state_queue.push(SyncUtxoSet);
+            state_queue.push(SyncUtxoSet(validation_level));
           } else {
             // Now that we're done with reorgs, update our cached block data
             let mut hashes_to_drop_data = vec![];
@@ -346,11 +346,11 @@ impl Bitcoind {
           println!("{}: Idling...", idle_state.config.network);
           nu_select!(
             message from idle_state.net_chan => {
-              idle_message(&mut idle_state, message);
+              idle_message(&mut state_queue, &mut idle_state, message);
             },
             () from save_timer => {
               state_queue.push(SyncBlockchain);
-              state_queue.push(SyncUtxoSet);
+              state_queue.push(SyncUtxoSet(ScriptValidation));
               state_queue.push(SaveToDisk);
             },
             (request, tx) from self.rpc_rx => {
@@ -408,7 +408,9 @@ impl Listener for Bitcoind {
 }
 
 /// Idle message handler
-fn idle_message(idle_state: &mut IdleState, message: NetworkMessage) {
+fn idle_message<S:Deque<WalletAction>>(state_queue: &mut S,
+                                       idle_state: &mut IdleState,
+                                       message: NetworkMessage) {
   match message {
     message::Version(_) => {
       // TODO: actually read version message
@@ -423,16 +425,8 @@ fn idle_message(idle_state: &mut IdleState, message: NetworkMessage) {
       let mut lock = idle_state.blockchain.write();
       println!("{}, Received block: {:x}", idle_state.config.network, block.bitcoin_hash());
       if lock.get_block(block.header.prev_blockhash).is_some() {
-        let mut utxo_lock = idle_state.utxo_set.write();
         // non-orphan, add it
         println!("{}, Received non-orphan, adding to blockchain...", idle_state.config.network);
-        match utxo_lock.update(&block, ScriptValidation) {
-          Ok(_) => {}
-          Err(e) => {
-            println!("{}, Failed to update UTXO set with block {}: {}",
-                     idle_state.config.network, block.bitcoin_hash(), e);
-          }
-        }
         match lock.add_block(block) {
           Err(e) => {
             println!("{}, Failed to add block: {}", idle_state.config.network, e);
@@ -441,14 +435,12 @@ fn idle_message(idle_state: &mut IdleState, message: NetworkMessage) {
         }
         println!("{}, Done adding block.", idle_state.config.network);
       } else {
-        let lock = lock.downgrade();
-        // orphan, send getblocks to get all blocks in order
-        println!("{}, Got an orphan, sending a getblocks to get its parents", idle_state.config.network);
-        consume_err("Headers sync: failed to send `headers` message",
-          idle_state.sock.send_message(message::GetBlocks(
-              GetBlocksMessage::new(lock.locator_hashes(),
-                                    block.header.prev_blockhash))));
+        println!("{}, Received an orphan, syncing the chain to clear up the confusion.",
+                 idle_state.config.network);
+        state_queue.push(SyncBlockchain);
       }
+      // In either case we want to sync the UTXO set afterward
+      state_queue.push(SyncUtxoSet(ScriptValidation));
     },
     message::Headers(headers) => {
       for lone_header in headers.iter() {
