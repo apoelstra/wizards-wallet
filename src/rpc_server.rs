@@ -16,13 +16,18 @@
 //!
 //! Functions and data to handle RPC calls
 
+use std::io::{IoError, MemReader};
 use std::collections::TreeMap;
 use std::time::Duration;
 use serialize::Decodable;
+use serialize::hex::FromHex;
 use serialize::json;
 use serialize::json::ToJson;
 
+use bitcoin::network::serialize::{RawDecoder, deserialize};
+use bitcoin::network::encodable::ConsensusDecodable;
 use bitcoin::util::hash::Sha256dHash;
+use bitcoin::blockdata::transaction::Transaction;
 use jsonrpc;
 use jsonrpc::error::{standard_error, Error, InvalidParams, MethodNotFound};
 use phf::PhfOrderedMap;
@@ -163,6 +168,50 @@ rpc_calls!{
     }
   },
 
+  #[doc="Decodes a raw transaction"]
+  #[usage="<hex-encoded tx data>"]
+  #[coinjoin=false]
+  pub fn raw_decode(rpc: &RpcCall, _: &mut IdleState, params: Vec<json::Json>) {
+    match params.len() {
+      1 => {
+        let tx: Transaction = try!(decode_hex_param(params[0].clone()));
+        Ok(tx.to_json())
+      }
+      _ => Err(usage_error(rpc))
+    }
+  },
+
+  #[doc="Validates a raw transaction"]
+  #[usage="<hex-encoded tx data>"]
+  #[coinjoin=false]
+  pub fn raw_validate(rpc: &RpcCall, idle_state: &mut IdleState, params: Vec<json::Json>) {
+    match params.len() {
+      1 => {
+        let tx: Transaction = try!(decode_hex_param(params[0].clone()));
+        let utxo_set = idle_state.utxo_set.read();
+        match tx.validate(&*utxo_set) {
+          Ok(_) => Ok(json::Boolean(true)),
+          Err(e) => Err(bitcoin_json_error(InvalidTx, Some(json::String(e.to_string()))))
+        }
+      }
+      _ => Err(usage_error(rpc))
+    }
+  },
+
+  #[doc="Traces execution of a raw transaction's scripts"]
+  #[usage="<hex-encoded tx data>"]
+  #[coinjoin=false]
+  pub fn raw_trace(rpc: &RpcCall, idle_state: &mut IdleState, params: Vec<json::Json>) {
+    match params.len() {
+      1 => {
+        let tx: Transaction = try!(decode_hex_param(params[0].clone()));
+        let utxo_set = idle_state.utxo_set.read();
+        Ok(tx.trace(&*utxo_set).to_json())
+      }
+      _ => Err(usage_error(rpc))
+    }
+  },
+
   #[doc="Starts a new coinjoin session"]
   #[usage="<target amount (satoshi)> <join duration (seconds)> <merge duration (seconds)>"]
   #[coinjoin=true]
@@ -217,6 +266,7 @@ rpc_calls!{
 enum BitcoinJsonError {
   BadRng,
   BlockNotFound,
+  InvalidTx,
   SessionNotFound
 }
 
@@ -224,6 +274,21 @@ enum BitcoinJsonError {
 fn decode_param<T:Decodable<json::Decoder, json::DecoderError>>(param: json::Json) -> jsonrpc::JsonResult<T> {
   let mut decoder = json::Decoder::new(param);
   Decodable::decode(&mut decoder)
+    .map_err(|e| standard_error(InvalidParams,
+                                Some(json::String(e.to_string()))))
+}
+
+/// Decode a hex-encoded parameter
+fn decode_hex_param<T:ConsensusDecodable<RawDecoder<MemReader>, IoError>>(param: json::Json)
+                                                                          -> jsonrpc::JsonResult<T> {
+  let hex: String = try!(decode_param(param));
+  let raw = match hex.as_slice().from_hex() {
+    Ok(raw) => raw,
+    Err(e) => { return Err(standard_error(InvalidParams,
+                                          Some(json::String(e.to_string())))); }
+  };
+
+  deserialize(raw)
     .map_err(|e| standard_error(InvalidParams,
                                 Some(json::String(e.to_string()))))
 }
@@ -241,8 +306,13 @@ fn bitcoin_json_error(code: BitcoinJsonError, data: Option<json::Json>) -> Error
       message: "Block not found".to_string(),
       data: data
     },
-    SessionNotFound => Error {
+    InvalidTx => Error {
       code: -3,
+      message: "Transaction invalid".to_string(),
+      data: data
+    },
+    SessionNotFound => Error {
+      code: -4,
       message: "Coinjoin session not found".to_string(),
       data: data
     }
