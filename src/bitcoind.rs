@@ -16,6 +16,7 @@
 //!
 //! Main network listener and idle loop.
 
+use std::collections::{DList, Deque};
 use std::default::Default;
 use std::io::{File, Open, Write, BufferedReader, BufferedWriter};
 use std::io::IoResult;
@@ -46,8 +47,7 @@ use constants::SAVE_FREQUENCY;
 use rpc_server::handle_rpc;
 use user_data::NetworkConfig;
 
-/// Data used by an idling wallet. This is constructed piecemeal during
-/// startup.
+/// Data used by an idling wallet.
 pub struct IdleState {
   sock: Socket,
   net_chan: Receiver<NetworkMessage>,
@@ -61,13 +61,10 @@ pub struct IdleState {
   pub utxo_set: Arc<RWLock<UtxoSet>>
 }
 
-enum StartupState {
-  Init,
-  LoadFromDisk(Socket, Receiver<NetworkMessage>),
-  SyncBlockchain(IdleState),
-  SyncUtxoSet(IdleState, Vec<Inventory>),
-  SaveToDisk(IdleState), 
-  Idle(IdleState)
+enum WalletAction {
+  SyncBlockchain,
+  SyncUtxoSet,
+  SaveToDisk,
 }
 
 /// The main Bitcoin network listener structure
@@ -113,53 +110,52 @@ impl Bitcoind {
   pub fn listen(&mut self) -> IoResult<()> {
     let mut timer = Timer::new().unwrap();  // TODO: can this fail? what should we do?
     let save_timer = timer.periodic(Duration::seconds(SAVE_FREQUENCY));
-    let mut state = Init;
+    let mut state_queue = DList::new();
+
+    // Startup
+    // Open socket
+    let (chan, sock) = try!(self.start());
+    // Load cached blockchain and UTXO set from disk
+    println!("{}: Loading blockchain...", self.config.network);
+    // Load blockchain from disk
+    let mut decoder = RawDecoder::new(BufferedReader::new(File::open(&self.config.blockchain_path)));
+    let blockchain = match ConsensusDecodable::consensus_decode(&mut decoder) {
+      Ok(blockchain) => blockchain,
+      Err(e) => {
+        println!("{}: Failed to load blockchain: {:}, starting from genesis.", self.config.network, e);
+        Blockchain::new(self.config.network)
+      }
+    };
+    println!("{}: Loading utxo set...", self.config.network);
+    // Load UTXO set from disk
+    let mut decoder = RawDecoder::new(BufferedReader::new(File::open(&self.config.utxo_set_path)));
+    let utxo_set = match ConsensusDecodable::consensus_decode(&mut decoder) {
+      Ok(utxo_set) => utxo_set,
+      Err(e) => {
+        println!("{}: Failed to load UTXO set: {:}, starting from genesis.", self.config.network, e);
+        UtxoSet::new(self.config.network, BLOCKCHAIN_N_FULL_BLOCKS)
+      }
+    };
+    // Setup idle state
+    let mut idle_state = IdleState {
+      sock: sock,
+      net_chan: chan,
+      // TODO: I'd rather this clone be some sort of take, but we need `self.config`
+      //       to be around for the `Listener` trait getters below. Rework this.
+      config: self.config.clone(),
+      blockchain: Arc::new(RWLock::new(blockchain)),
+      utxo_set: Arc::new(RWLock::new(utxo_set)),
+      coinjoin: None
+    };
+
     // Eternal state machine loop
+    state_queue.push(SyncBlockchain);
+    state_queue.push(SyncUtxoSet);
+    state_queue.push(SaveToDisk);
     loop {
-      state = match state {
-        // First startup
-        Init => {
-          // Open socket
-          let (chan, sock) = try!(self.start());
-          LoadFromDisk(sock, chan)
-        }
-        // Load cached blockchain and utxo set from disk
-        LoadFromDisk(sock, chan) => {
-          println!("{}: Loading blockchain...", self.config.network);
-          // Load blockchain from disk
-          let mut decoder = RawDecoder::new(BufferedReader::new(File::open(&self.config.blockchain_path)));
-          let blockchain = match ConsensusDecodable::consensus_decode(&mut decoder) {
-            Ok(blockchain) => blockchain,
-            Err(e) => {
-              println!("{}: Failed to load blockchain: {:}, starting from genesis.", self.config.network, e);
-              Blockchain::new(self.config.network)
-            }
-          };
-          println!("{}: Loading utxo set...", self.config.network);
-          // Load UTXO set from disk
-          let mut decoder = RawDecoder::new(BufferedReader::new(File::open(&self.config.utxo_set_path)));
-          let utxo_set = match ConsensusDecodable::consensus_decode(&mut decoder) {
-            Ok(utxo_set) => utxo_set,
-            Err(e) => {
-              println!("{}: Failed to load UTXO set: {:}, starting from genesis.", self.config.network, e);
-              UtxoSet::new(self.config.network, BLOCKCHAIN_N_FULL_BLOCKS)
-            }
-          };
-
-          SyncBlockchain(IdleState {
-              sock: sock,
-              net_chan: chan,
-              // TODO: I'd rather this clone be some sort of take, but we need `self.config`
-              //       to be around for the `Listener` trait getters below. Rework this.
-              config: self.config.clone(),
-              blockchain: Arc::new(RWLock::new(blockchain)),
-              utxo_set: Arc::new(RWLock::new(utxo_set)),
-              coinjoin: None
-            })
-        },
+      match state_queue.pop_front() {
         // Synchronize the blockchain with the peer
-        SyncBlockchain(mut idle_state) => {
-
+        Some(SyncBlockchain) => {
           // Do a headers-first sync of all blocks
           let mut done = false;
           while !done {
@@ -199,36 +195,38 @@ impl Bitcoind {
           }
           // Done!
           println!("{}: Done sync.", idle_state.config.network);
-          SyncUtxoSet(idle_state, Vec::with_capacity(UTXO_SYNC_N_BLOCKS))
         },
-        SyncUtxoSet(mut idle_state, mut cache) => {
+        Some(SyncUtxoSet) => {
           let mut failed = false;
-          cache.clear();
+          let mut cache = Vec::with_capacity(UTXO_SYNC_N_BLOCKS);
           // Ugh these scopes are ugly. Can't wait for non-lexically-scoped borrows!
           {
             let blockchain = idle_state.blockchain.read();
-            let mut utxo_set = idle_state.utxo_set.write();
+            let last_hash = {
+              let mut utxo_set = idle_state.utxo_set.write();
+              let last_hash = utxo_set.last_hash();
+              println!("{}: Starting UTXO sync from {}", idle_state.config.network, last_hash);
 
-            let last_hash = utxo_set.last_hash();
-            println!("{}: Starting UTXO sync from {}", idle_state.config.network, last_hash);
-
-            // Unwind any reorg'd blooks
-            for block in blockchain.rev_stale_iter(last_hash) {
-              println!("{}: Rewinding stale block {}",
-                       idle_state.config.network, block.bitcoin_hash());
-              if !utxo_set.rewind(block) {
-                println!("{}: Failed to rewind stale block {}",
+              // Unwind any reorg'd blooks
+              for block in blockchain.rev_stale_iter(last_hash) {
+                println!("{}: Rewinding stale block {}",
                          idle_state.config.network, block.bitcoin_hash());
+                if !utxo_set.rewind(block) {
+                  println!("{}: Failed to rewind stale block {}",
+                           idle_state.config.network, block.bitcoin_hash());
+                }
               }
-            }
+              utxo_set.last_hash()
+            };
             // Loop through blockchain for new data
-            let last_hash = utxo_set.last_hash();
             let mut iter = blockchain.iter(last_hash).enumerate().skip(1).peekable();
             for (count, node) in iter {
+              // Reborrow blockchain and utxoset on each iter
               cache.push(Inventory { inv_type: InvBlock, hash: node.block.bitcoin_hash() });
 
               // Every so often, send a new message
               if count % UTXO_SYNC_N_BLOCKS == 0 || iter.is_empty() {
+                let mut utxo_set = idle_state.utxo_set.write();
                 println!("{}: UTXO sync: n_blocks {} n_utxos {} pruned {}",
                          idle_state.config.network, count, utxo_set.n_utxos(), utxo_set.n_pruned());
                 consume_err("UTXO sync: failed to send `getdata` message",
@@ -279,9 +277,10 @@ impl Bitcoind {
             }
           }
           if failed {
-            println!("{}: Failed to sync UTXO set, trying to resync chain.",
+            println!("{}: Failed to sync UTXO set, will resync chain and try again.",
                      idle_state.config.network);
-            SyncBlockchain(idle_state)
+            state_queue.push(SyncBlockchain);
+            state_queue.push(SyncUtxoSet);
           } else {
             // Now that we're done with reorgs, update our cached block data
             let mut hashes_to_drop_data = vec![];
@@ -340,31 +339,27 @@ impl Bitcoind {
                 )
               }
             }
-            SaveToDisk(idle_state)
           }
         },
         // Idle loop
-        Idle(mut idle_state) => {
+        None => {
           println!("{}: Idling...", idle_state.config.network);
-          let saveout = nu_select!(
+          nu_select!(
             message from idle_state.net_chan => {
               idle_message(&mut idle_state, message);
-              false
             },
-            () from save_timer => true,
+            () from save_timer => {
+              state_queue.push(SyncBlockchain);
+              state_queue.push(SyncUtxoSet);
+              state_queue.push(SaveToDisk);
+            },
             (request, tx) from self.rpc_rx => {
               tx.send(handle_rpc(request, &mut idle_state));
-              false
             }
           );
-          if saveout {
-            SyncBlockchain(idle_state)
-          } else {
-            Idle(idle_state)
-          }
         },
         // Temporary states
-        SaveToDisk(idle_state) => {
+        Some(SaveToDisk) => {
           let bc_arc = idle_state.blockchain.clone();
           let us_arc = idle_state.utxo_set.clone();
           let blockchain_path = idle_state.config.blockchain_path.clone();
@@ -392,7 +387,6 @@ impl Bitcoind {
               }
             }
           });
-          Idle(idle_state)
         }
       };
     }
