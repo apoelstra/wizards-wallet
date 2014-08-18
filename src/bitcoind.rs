@@ -469,26 +469,6 @@ fn idle_message<S:Deque<WalletAction>>(state_queue: &mut S,
 
 #[cfg(test)]
 mod tests {
-  use bitcoin::network::constants::BitcoinTestnet;
-  use bitcoin::network::listener::Listener;
-
-  use user_data::{blockchain_path, utxo_set_path};
-  use bitcoind::Bitcoind;
-
-  #[test]
-  fn test_bitcoind() {
-    let bitcoind = Bitcoind::new("localhost", 1000,
-                                 BitcoinTestnet,
-                                 blockchain_path(BitcoinTestnet),
-                                 utxo_set_path(BitcoinTestnet));
-    assert_eq!(bitcoind.peer(), "localhost");
-    assert_eq!(bitcoind.port(), 1000);
-
-    let mut bitcoind = Bitcoind::new("localhost", 0,
-                                     BitcoinTestnet,
-                                     blockchain_path(BitcoinTestnet),
-                                     utxo_set_path(BitcoinTestnet));
-    assert!(bitcoind.listen().is_err());
-  }
+  // TODO
 }
 

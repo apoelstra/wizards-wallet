@@ -57,11 +57,14 @@ extern crate phf;
 extern crate toml;
 extern crate xdg;
 
+#[cfg(not(test))]
 use bitcoind::Bitcoind;
+#[cfg(not(test))]
 use jsonrpc::server::JsonRpcServer;
+#[cfg(not(test))]
 use http::server::Server;
+#[cfg(not(test))]
 use user_data::{config_path, load_configuration};
-
 // Public exports to get documentation
 pub mod bitcoind;
 pub mod coinjoin;
@@ -70,6 +73,7 @@ pub mod rpc_server;
 pub mod user_data;
 
 /// Entry point
+#[cfg(not(test))]
 fn main()
 {
   println!("Starting the Wizards' Wallet");
