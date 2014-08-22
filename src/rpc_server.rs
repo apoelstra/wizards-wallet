@@ -24,9 +24,10 @@ use serialize::hex::FromHex;
 use serialize::json;
 use serialize::json::ToJson;
 
-use bitcoin::network::serialize::{RawDecoder, deserialize};
-use bitcoin::network::encodable::ConsensusDecodable;
+use bitcoin::network::serialize::{RawDecoder, deserialize, serialize};
+use bitcoin::network::encodable::{ConsensusDecodable, VarInt};
 use bitcoin::util::hash::Sha256dHash;
+use bitcoin::blockdata::script::Script;
 use bitcoin::blockdata::transaction::Transaction;
 use jsonrpc;
 use jsonrpc::error::{standard_error, Error, InvalidParams, MethodNotFound};
@@ -36,6 +37,11 @@ use bitcoind::IdleState;
 use coinjoin::server::{Server, Session, SessionId};
 
 pub type JsonResult = jsonrpc::JsonResult<json::Json>;
+
+enum RawDecodeMode {
+    DecodeAsIs,
+    PrependLength
+}
 
 /// A single RPC command
 pub struct RpcCall {
@@ -139,7 +145,7 @@ rpc_calls!{
   #[coinjoin=false]
   pub fn getutxocount(rpc: &RpcCall, idle_state: &mut IdleState, params: Vec<json::Json>) {
     match params.len() {
-      0 => Ok(json::Number(idle_state.utxo_set.read().n_utxos() as f64)),
+      0 => Ok(json::U64(idle_state.utxo_set.read().n_utxos() as u64)),
       _ => Err(usage_error(rpc))
     }
   },
@@ -152,7 +158,7 @@ rpc_calls!{
       0 => {
         let blockchain = idle_state.blockchain.read();
         // Subtract 1 from the hash since the genesis counts as block 0
-        Ok(json::Number(blockchain.iter(blockchain.genesis_hash()).count() as f64 - 1.0))
+        Ok(json::U64(blockchain.iter(blockchain.genesis_hash()).count() as u64 - 1))
       }
       1 => {
         let blockchain = idle_state.blockchain.read();
@@ -161,7 +167,7 @@ rpc_calls!{
         // Subtract 1 from the hash since the genesis counts as block 0
         match blockchain.iter(hash).count() {
           0 => Err(bitcoin_json_error(BlockNotFound, Some(hash.to_json()))),
-          n => Ok(json::Number(n as f64 - 1.0)),
+          n => Ok(json::U64(n as u64 - 1)),
         }
       }
       _ => Err(usage_error(rpc))
@@ -174,7 +180,7 @@ rpc_calls!{
   pub fn raw_decode(rpc: &RpcCall, _: &mut IdleState, params: Vec<json::Json>) {
     match params.len() {
       1 => {
-        let tx: Transaction = try!(decode_hex_param(params[0].clone()));
+        let tx: Transaction = try!(decode_hex_param(params[0].clone(), DecodeAsIs));
         Ok(tx.to_json())
       }
       _ => Err(usage_error(rpc))
@@ -187,7 +193,7 @@ rpc_calls!{
   pub fn raw_validate(rpc: &RpcCall, idle_state: &mut IdleState, params: Vec<json::Json>) {
     match params.len() {
       1 => {
-        let tx: Transaction = try!(decode_hex_param(params[0].clone()));
+        let tx: Transaction = try!(decode_hex_param(params[0].clone(), DecodeAsIs));
         let utxo_set = idle_state.utxo_set.read();
         match tx.validate(&*utxo_set) {
           Ok(_) => Ok(json::Boolean(true)),
@@ -204,9 +210,22 @@ rpc_calls!{
   pub fn raw_trace(rpc: &RpcCall, idle_state: &mut IdleState, params: Vec<json::Json>) {
     match params.len() {
       1 => {
-        let tx: Transaction = try!(decode_hex_param(params[0].clone()));
+        let tx: Transaction = try!(decode_hex_param(params[0].clone(), DecodeAsIs));
         let utxo_set = idle_state.utxo_set.read();
         Ok(tx.trace(&*utxo_set).to_json())
+      }
+      _ => Err(usage_error(rpc))
+    }
+  },
+
+  #[doc="Traces execution of an individual script"]
+  #[usage="<hex-encoded script>"]
+  #[coinjoin=false]
+  pub fn script_trace(rpc: &RpcCall, _: &mut IdleState, params: Vec<json::Json>) {
+    match params.len() {
+      1 => {
+        let script: Script = try!(decode_hex_param(params[0].clone(), PrependLength));
+        Ok(script.trace(&mut vec![], None).to_json())
       }
       _ => Err(usage_error(rpc))
     }
@@ -279,14 +298,22 @@ fn decode_param<T:Decodable<json::Decoder, json::DecoderError>>(param: json::Jso
 }
 
 /// Decode a hex-encoded parameter
-fn decode_hex_param<T:ConsensusDecodable<RawDecoder<MemReader>, IoError>>(param: json::Json)
+fn decode_hex_param<T:ConsensusDecodable<RawDecoder<MemReader>, IoError>>(param: json::Json, mode: RawDecodeMode)
                                                                           -> jsonrpc::JsonResult<T> {
   let hex: String = try!(decode_param(param));
-  let raw = match hex.as_slice().from_hex() {
+  let mut raw = match hex.as_slice().from_hex() {
     Ok(raw) => raw,
     Err(e) => { return Err(standard_error(InvalidParams,
                                           Some(json::String(e.to_string())))); }
   };
+
+  match mode {
+    DecodeAsIs => {},
+    PrependLength => {
+      let len = serialize(&VarInt(raw.len() as u64)).unwrap();
+      raw = len.append(raw.as_slice());
+    }
+  }
 
   deserialize(raw)
     .map_err(|e| standard_error(InvalidParams,
