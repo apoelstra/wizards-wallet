@@ -19,6 +19,9 @@ git = "https://github.com/sfackler/rust-phf.git"
 [dependencies.phf_mac]
 git = "https://github.com/sfackler/rust-phf.git"
 
+[dependencies.rust-crypto]
+git = "https://github.com/DaGenix/rust-crypto.git"
+
 [dependencies.toml]
 git = "https://github.com/alexcrichton/toml-rs.git"
 

@@ -50,6 +50,7 @@ extern crate sync;
 extern crate time;
 
 #[phase(plugin,link)] extern crate bitcoin;
+extern crate crypto = "rust-crypto";
 extern crate http;
 extern crate jsonrpc;
 #[phase(plugin)] extern crate phf_mac;

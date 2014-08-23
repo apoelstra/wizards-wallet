@@ -35,6 +35,7 @@ use phf::PhfOrderedMap;
 
 use bitcoind::IdleState;
 use coinjoin::server::{Server, Session, SessionId};
+use coinjoin::CoinjoinError;
 
 pub type JsonResult = jsonrpc::JsonResult<json::Json>;
 
@@ -238,8 +239,8 @@ rpc_calls!{
     match params.len() {
       3 => {
         let target: u64 = try!(decode_param(params[0].clone()));
-        let join_duration = Duration::milliseconds(try!(decode_param(params[1].clone())));
-        let expiry_duration = Duration::milliseconds(try!(decode_param(params[2].clone())));
+        let join_duration = Duration::seconds(try!(decode_param(params[1].clone())));
+        let expiry_duration = Duration::seconds(try!(decode_param(params[2].clone())));
 
         // Start session manager if we haven't
         if idle_state.coinjoin.is_none() {
@@ -279,12 +280,47 @@ rpc_calls!{
       }
       _ => Err(usage_error(rpc))
     }
+  },
+
+  #[doc="Adds a transaction to the current coinjoin session"]
+  #[usage="<rawtx> [session id]"]
+  #[coinjoin=true]
+  pub fn coinjoin_add_raw(rpc: &RpcCall, idle_state: &mut IdleState, params: Vec<json::Json>) {
+    if idle_state.coinjoin.is_none() {
+      return Err(bitcoin_json_error(SessionNotFound, None));
+    }
+    // Update the server state
+    let server = idle_state.coinjoin.get_mut_ref();
+    server.update_all();
+
+    let session = match params.len() {
+      1 => {
+        match server.current_session_mut() {
+          Some(s) => s,
+          None => { return Err(bitcoin_json_error(SessionNotFound, None)); }
+        }
+      }
+      2 => {
+        let id: SessionId = try!(decode_param(params[1].clone()));
+        match server.session_mut(&id) {
+          Some(s) => s,
+          None => { return Err(bitcoin_json_error(SessionNotFound, None)); }
+        }
+      }
+      _ => { return Err(usage_error(rpc)); }
+    };
+    let tx = try!(decode_hex_param(params[0].clone(), DecodeAsIs));
+    match session.add_transaction(&tx, &*idle_state.utxo_set.read()) {
+      Ok(()) => Ok(json::Boolean(true)),
+      Err(e) => Err(bitcoin_json_error(CoinjoinError(e), None))
+    }
   }
 }
 
 enum BitcoinJsonError {
   BadRng,
   BlockNotFound,
+  CoinjoinError(CoinjoinError),
   InvalidTx,
   SessionNotFound
 }
@@ -333,13 +369,18 @@ fn bitcoin_json_error(code: BitcoinJsonError, data: Option<json::Json>) -> Error
       message: "Block not found".to_string(),
       data: data
     },
-    InvalidTx => Error {
+    CoinjoinError(e) => Error {
       code: -3,
+      message: format!("Coinjoin error: {}", e),
+      data: data
+    },
+    InvalidTx => Error {
+      code: -4,
       message: "Transaction invalid".to_string(),
       data: data
     },
     SessionNotFound => Error {
-      code: -4,
+      code: -5,
       message: "Coinjoin session not found".to_string(),
       data: data
     }
