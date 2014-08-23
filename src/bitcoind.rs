@@ -49,8 +49,9 @@ use user_data::NetworkConfig;
 
 /// Data used by an idling wallet.
 pub struct IdleState {
-  sock: Socket,
   net_chan: Receiver<NetworkMessage>,
+  /// Socket used to send network messages
+  pub sock: Socket,
   /// Network that we're on
   pub config: NetworkConfig,
   /// Coinjoin server
@@ -454,6 +455,9 @@ fn idle_message<S:Deque<WalletAction>>(state_queue: &mut S,
       // Send
       consume_err("Warning: failed to send getdata in response to inv",
         idle_state.sock.send_message(sendmsg));
+    }
+    message::Tx(_) => {
+      println!("Received tx, ignoring");
     }
     message::GetData(_) => {}
     message::NotFound(_) => {}

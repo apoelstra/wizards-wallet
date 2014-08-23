@@ -17,6 +17,7 @@
 //! Functions and data to manage a centralized coinjoin server.
 
 use std::collections::{HashMap, TreeMap};
+use std::default::Default;
 use std::num::from_str_radix;
 use std::io::IoResult;
 use std::rand::{Rng, SeedableRng};
@@ -26,16 +27,18 @@ use serialize::json;
 use serialize::{Decodable, Decoder, Encodable, Encoder};
 use time::precise_time_ns;
 
-use bitcoin::blockdata::transaction::Transaction;
+use bitcoin::blockdata::transaction::{Transaction, TxIn};
 use bitcoin::blockdata::utxoset::UtxoSet;
-use bitcoin::network::serialize::serialize_hex;
+use bitcoin::network::serialize::{BitcoinHash, serialize_hex};
 use crypto::fortuna::Fortuna;
 
-use coinjoin::{CoinjoinError, DuplicateInput, NonZeroLocktime,
-               NoTargetOutput, UnknownInput, UnknownVersion};
+use coinjoin::{CoinjoinError, DuplicateInput, IncorrectState,
+               NoNewSignedInputs, NonZeroLocktime, NoTargetOutput,
+               OutputsExceedInputs, UnexpectedInput, UnexpectedOutput,
+               UnknownInput, UnknownVersion, WrongInputCount, WrongOutputCount};
 
 /// Current state of the session
-#[deriving(PartialEq, Eq, PartialOrd, Ord, Show)]
+#[deriving(Clone, PartialEq, Eq, PartialOrd, Ord, Show)]
 pub enum SessionState {
   /// Collecting unsigned transactions
   Joining,
@@ -77,7 +80,8 @@ pub struct Session {
   expiry_duration: Duration,
   target_value: u64,
   unsigned: Vec<Transaction>,
-  merged: Option<Transaction>
+  merged: Option<Transaction>,
+  signed: Option<Transaction>
 }
 
 impl json::ToJson for Session {
@@ -90,15 +94,25 @@ impl json::ToJson for Session {
     obj.insert("state".to_string(), self.state.to_json());
     obj.insert("join_duration".to_string(), self.join_duration.num_milliseconds().to_json());
     obj.insert("merge_duration".to_string(), self.expiry_duration.num_milliseconds().to_json());
-    if self.state == Merging {
-      obj.insert("merged_tx".to_string(), json::String(serialize_hex(self.merged.get_ref()).unwrap()));
-    }
-    if self.state == Joining {
-      obj.insert("time_until_merge".to_string(),
-                 (self.join_duration - time_since_switch).num_milliseconds().to_json());
-    } else {
-      obj.insert("time_until_expiry".to_string(),
-                 (self.expiry_duration - time_since_switch).num_milliseconds().to_json());
+    match self.state {
+      Merging => {
+        obj.insert("merged_tx".to_string(), json::String(serialize_hex(self.merged.get_ref()).unwrap()));
+        obj.insert("time_until_expiry".to_string(),
+                   (self.expiry_duration - time_since_switch).num_milliseconds().to_json());
+      }
+      Joining => {
+        obj.insert("time_until_merge".to_string(),
+                   (self.join_duration - time_since_switch).num_milliseconds().to_json());
+      }
+      Complete => {
+        obj.insert("txid".to_string(), self.signed.get_ref().bitcoin_hash().to_json());
+        obj.insert("time_until_deletion".to_string(),
+                   (self.expiry_duration - time_since_switch).num_milliseconds().to_json());
+      }
+      _ => {
+        obj.insert("time_until_deletion".to_string(),
+                   (self.expiry_duration - time_since_switch).num_milliseconds().to_json());
+      }
     }
     obj.insert("target_value".to_string(), self.target_value.to_json());
     json::Object(obj)
@@ -121,7 +135,7 @@ impl<D: Decoder<E>, E> Decodable<D, E> for SessionId {
     let st = try!(d.read_str());
     match from_str_radix(st.as_slice(), 16) {
       Some(n) => Ok(SessionId(n)),
-      None    => Err(d.error("Session ID was not a valid hex string"))
+      None    => Err(d.error(format!("Session ID `{}` is not a valid hex string", st).as_slice()))
     }
   }
 }
@@ -156,7 +170,8 @@ impl Session {
       join_duration: join_duration,
       expiry_duration: expiry_duration,
       unsigned: vec![],
-      merged: None
+      merged: None,
+      signed: None
     })
   }
 
@@ -165,9 +180,13 @@ impl Session {
     self.id
   }
 
-  /// Adds a transaction to a coinjoin session
-  pub fn add_transaction(&mut self, tx: &Transaction, utxo_set: &UtxoSet)
-                         -> Result<(), CoinjoinError> {
+  /// Adds an unsigned transaction to a coinjoin session
+  pub fn add_unsigned(&mut self, tx: &Transaction, utxo_set: &UtxoSet)
+                      -> Result<(), CoinjoinError> {
+    if self.state != Joining {
+      return Err(IncorrectState(Joining, self.state));
+    }
+
     // Check for version, locktime
     if tx.version != 1 {
       return Err(UnknownVersion(tx.version as uint));
@@ -182,9 +201,12 @@ impl Session {
     }
     // Check that we know all the inputs, and that they have
     // not already been used in this join
+    let mut total_in = 0;
     for input in tx.input.iter() {
-      if utxo_set.get_utxo(input.prev_hash, input.prev_index).is_none() {
-        return Err(UnknownInput(input.prev_hash, input.prev_index as uint));
+      let utxo = utxo_set.get_utxo(input.prev_hash, input.prev_index);
+      match utxo {
+        Some(out) => { total_in += out.value; }
+        None => { return Err(UnknownInput(input.prev_hash, input.prev_index as uint)); }
       }
       for other_tx in self.unsigned.iter() { 
         for other_input in other_tx.input.iter() {
@@ -195,6 +217,14 @@ impl Session {
         }
       }
     }
+    let total_out = tx.output.iter().fold(0, |acc, out| acc + out.value);
+
+    // Check that input value is <= output value
+    // TODO: there should be a session option to allow this, for doing transfers
+    if total_in < total_out {
+      return Err(OutputsExceedInputs(total_out, total_in));
+    }
+
     // All Ok, add it
     self.unsigned.push(tx.clone());
     Ok(())
@@ -237,8 +267,86 @@ impl Session {
     self.rng.shuffle(merged.input.as_mut_slice());
     self.rng.shuffle(merged.output.as_mut_slice());
 
+    self.signed = Some(Transaction {
+      version: merged.version,
+      lock_time: merged.lock_time,
+      input: merged.input.iter().map(
+        |input| TxIn {
+          prev_hash: input.prev_hash,
+          prev_index: input.prev_index,
+          script_sig: Default::default(),
+          sequence: input.sequence
+        }).collect(),
+      output: merged.output.clone()
+    });
     self.merged = Some(merged);
   }
+
+  /// Adds a signed transaction to a coinjoin session
+  pub fn add_signed(&mut self, tx: &Transaction, utxo_set: &UtxoSet)
+                      -> Result<(), CoinjoinError> {
+    if self.state != Merging {
+      return Err(IncorrectState(Merging, self.state));
+    }
+    let merged = self.merged.get_ref();
+    let signed = self.signed.get_mut_ref();
+
+    // Quick sanity checks
+    if merged.input.len() != tx.input.len() {
+      return Err(WrongInputCount(tx.input.len()));
+    }
+    if merged.output.len() != tx.output.len() {
+      return Err(WrongOutputCount(tx.output.len()));
+    }
+
+    // Check that all the right inputs are there, in order
+    for (expected, actual) in merged.input.iter().zip(tx.input.iter()) {
+      if expected.prev_hash != actual.prev_hash ||
+         expected.prev_index != actual.prev_index ||
+         expected.sequence != actual.sequence {
+        return Err(UnexpectedInput(actual.prev_hash, actual.prev_index as uint));
+      }
+    }
+
+    // Check that all the right outputs are there, in order
+    for (expected, actual) in merged.output.iter().zip(tx.output.iter()) {
+      if expected.value != actual.value ||
+         expected.script_pubkey != actual.script_pubkey {
+        return Err(UnexpectedOutput(actual.script_pubkey.clone(), actual.value));
+      }
+    }
+
+    // Check that at least one of the inputs validates
+    let mut still_needed = 0u;
+    let mut n_new_inputs = 0u;
+    for (i, input) in tx.input.iter().enumerate() {
+      if signed.input[i].script_sig == Default::default() {
+        if input.validate(utxo_set, tx, i).is_ok() {
+          signed.input.get_mut(i).script_sig = input.script_sig.clone();
+          n_new_inputs += 1;
+        } else {
+          still_needed += 1;
+        }
+      }
+    }
+    if n_new_inputs == 0 {
+      return Err(NoNewSignedInputs);
+    }
+    // If there are no more needed inputs, send the tx
+    if still_needed == 0 {
+      // Build the transaction
+      // TODO add to mempool, actually transmit
+      self.state = Complete;
+    }
+
+    Ok(())
+  }
+
+  /// Accessor for the current state
+  pub fn state(&self) -> SessionState { self.state }
+
+  /// Accessor for the signed TX
+  pub fn signed_transaction<'a>(&'a self) -> Option<&'a Transaction> { self.signed.as_ref() }
 }
 
 /// A Coinjoin session manager

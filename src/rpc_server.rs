@@ -26,7 +26,9 @@ use serialize::json::ToJson;
 
 use bitcoin::network::serialize::{RawDecoder, deserialize, serialize};
 use bitcoin::network::encodable::{ConsensusDecodable, VarInt};
+use bitcoin::network::message;
 use bitcoin::util::hash::Sha256dHash;
+use bitcoin::util::misc::consume_err;
 use bitcoin::blockdata::script::Script;
 use bitcoin::blockdata::transaction::Transaction;
 use jsonrpc;
@@ -34,7 +36,7 @@ use jsonrpc::error::{standard_error, Error, InvalidParams, MethodNotFound};
 use phf::PhfOrderedMap;
 
 use bitcoind::IdleState;
-use coinjoin::server::{Server, Session, SessionId};
+use coinjoin::server::{Complete, Server, Session, SessionId};
 use coinjoin::CoinjoinError;
 
 pub type JsonResult = jsonrpc::JsonResult<json::Json>;
@@ -282,10 +284,10 @@ rpc_calls!{
     }
   },
 
-  #[doc="Adds a transaction to the current coinjoin session"]
+  #[doc="Adds a unsigned transaction to the current coinjoin session"]
   #[usage="<rawtx> [session id]"]
   #[coinjoin=true]
-  pub fn coinjoin_add_raw(rpc: &RpcCall, idle_state: &mut IdleState, params: Vec<json::Json>) {
+  pub fn coinjoin_add_raw_unsigned(rpc: &RpcCall, idle_state: &mut IdleState, params: Vec<json::Json>) {
     if idle_state.coinjoin.is_none() {
       return Err(bitcoin_json_error(SessionNotFound, None));
     }
@@ -310,10 +312,53 @@ rpc_calls!{
       _ => { return Err(usage_error(rpc)); }
     };
     let tx = try!(decode_hex_param(params[0].clone(), DecodeAsIs));
-    match session.add_transaction(&tx, &*idle_state.utxo_set.read()) {
+    match session.add_unsigned(&tx, &*idle_state.utxo_set.read()) {
       Ok(()) => Ok(json::Boolean(true)),
       Err(e) => Err(bitcoin_json_error(CoinjoinError(e), None))
     }
+  },
+
+  #[doc="Submits a (partially-)signed transaction to the current coinjoin session"]
+  #[usage="<rawtx> [session id]"]
+  #[coinjoin=true]
+  pub fn coinjoin_add_raw_signed(rpc: &RpcCall, idle_state: &mut IdleState, params: Vec<json::Json>) {
+    if idle_state.coinjoin.is_none() {
+      return Err(bitcoin_json_error(SessionNotFound, None));
+    }
+    // Update the server state
+    let server = idle_state.coinjoin.get_mut_ref();
+    server.update_all();
+
+    let session = match params.len() {
+      1 => {
+        match server.current_session_mut() {
+          Some(s) => s,
+          None => { return Err(bitcoin_json_error(SessionNotFound, None)); }
+        }
+      }
+      2 => {
+        let id: SessionId = try!(decode_param(params[1].clone()));
+        match server.session_mut(&id) {
+          Some(s) => s,
+          None => { return Err(bitcoin_json_error(SessionNotFound, None)); }
+        }
+      }
+      _ => { return Err(usage_error(rpc)); }
+    };
+    let tx = try!(decode_hex_param(params[0].clone(), DecodeAsIs));
+
+    // Add the signed transaction
+    let ret = match session.add_signed(&tx, &*idle_state.utxo_set.read()) {
+      Ok(()) => Ok(json::Boolean(true)),
+      Err(e) => Err(bitcoin_json_error(CoinjoinError(e), None))
+    };
+    // If that was the last one, submit it
+    if session.state() == Complete {
+      let complete_tx = session.signed_transaction().unwrap().clone();
+      consume_err("Coinjoin: failed to send `tx` message",
+        idle_state.sock.send_message(message::Tx(complete_tx)));
+    }
+    ret
   }
 }
 
