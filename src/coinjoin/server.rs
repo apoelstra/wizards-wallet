@@ -46,7 +46,9 @@ pub enum SessionState {
   /// Timed out waiting on signed transactions
   Expired,
   /// Failed (input spent out from under it)
-  Failed
+  Failed,
+  /// Failed (not enough inputs)
+  Unmerged
 }
 
 impl json::ToJson for SessionState {
@@ -56,7 +58,8 @@ impl json::ToJson for SessionState {
       Merging => "merging",
       Complete => "complete",
       Expired => "expired",
-      Failed => "failed"
+      Failed => "failed",
+      Unmerged => "unmerged"
     }.to_string())
   }
 }
@@ -92,10 +95,10 @@ impl json::ToJson for Session {
     }
     if self.state == Joining {
       obj.insert("time_until_merge".to_string(),
-                 (self.join_duration + time_since_switch).num_milliseconds().to_json());
+                 (self.join_duration - time_since_switch).num_milliseconds().to_json());
     } else {
       obj.insert("time_until_expiry".to_string(),
-                 (self.expiry_duration + time_since_switch).num_milliseconds().to_json());
+                 (self.expiry_duration - time_since_switch).num_milliseconds().to_json());
     }
     obj.insert("target_value".to_string(), self.target_value.to_json());
     json::Object(obj)
@@ -295,9 +298,13 @@ impl Server {
       match session.state {
         Joining => {
           if time_since_switch > session.join_duration {
-            session.state = Merging;
+            if session.unsigned.len() > 1 {
+              session.state = Merging;
+              session.merge_transactions();
+            } else {
+              session.state = Unmerged;
+            }
             session.switch_time = now;
-            session.merge_transactions();
           }
         }
         state => {
@@ -305,7 +312,7 @@ impl Server {
             session.state = match state {
               Joining => unreachable!(),
               Merging => Expired,
-              Complete | Expired | Failed => { keys_to_delete.push(*key); Expired }
+              Complete | Expired | Failed | Unmerged => { keys_to_delete.push(*key); Expired }
             };
             session.switch_time = now;
           }
