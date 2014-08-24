@@ -238,7 +238,7 @@ impl Bitcoind {
                 while block_count < cache.len() {
                   with_next_message!(idle_state.net_chan.recv(),
                     message::Block(block) => {
-                      recv_data.insert(&block.bitcoin_hash().into_uint128(), 128, block);
+                      recv_data.insert(&block.bitcoin_hash().into_le().low_128(), 128, block);
                       block_count += 1;
                     }
                     message::NotFound(_) => {
@@ -254,7 +254,7 @@ impl Bitcoind {
                   )
                 }
                 for recv_inv in cache.iter() {
-                  let block_opt = recv_data.lookup(&recv_inv.hash.into_uint128(), 128);
+                  let block_opt = recv_data.lookup(&recv_inv.hash.into_le().low_128(), 128);
                   match block_opt {
                     Some(block) => {
                       match utxo_set.update(block, validation_level) {
