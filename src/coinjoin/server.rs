@@ -22,7 +22,6 @@ use std::num::from_str_radix;
 use std::io::IoResult;
 use std::rand::{Rng, SeedableRng};
 use std::time::Duration;
-use num::integer::div_mod_floor;
 use serialize::json;
 use serialize::{Decodable, Decoder, Encodable, Encoder};
 use time::precise_time_ns;
@@ -86,8 +85,7 @@ pub struct Session {
 
 impl json::ToJson for Session {
   fn to_json(&self) -> json::Json {
-    let (secs, nanos) = div_mod_floor(precise_time_ns() - self.switch_time, 1_000_000_000);
-    let time_since_switch = Duration::seconds(secs as i32) + Duration::nanoseconds(nanos as i32);
+    let time_since_switch = Duration::nanoseconds(precise_time_ns() as i64 - self.switch_time as i64);
 
     let mut obj = TreeMap::new();
     obj.insert("id".to_string(), self.id.to_json());
@@ -96,7 +94,7 @@ impl json::ToJson for Session {
     obj.insert("merge_duration".to_string(), self.expiry_duration.num_milliseconds().to_json());
     match self.state {
       Merging => {
-        obj.insert("merged_tx".to_string(), json::String(serialize_hex(self.merged.get_ref()).unwrap()));
+        obj.insert("merged_tx".to_string(), json::String(serialize_hex(self.merged.as_ref().unwrap()).unwrap()));
         obj.insert("time_until_expiry".to_string(),
                    (self.expiry_duration - time_since_switch).num_milliseconds().to_json());
       }
@@ -105,7 +103,7 @@ impl json::ToJson for Session {
                    (self.join_duration - time_since_switch).num_milliseconds().to_json());
       }
       Complete => {
-        obj.insert("txid".to_string(), self.signed.get_ref().bitcoin_hash().to_json());
+        obj.insert("txid".to_string(), self.signed.as_ref().unwrap().bitcoin_hash().to_json());
         obj.insert("time_until_deletion".to_string(),
                    (self.expiry_duration - time_since_switch).num_milliseconds().to_json());
       }
@@ -288,8 +286,8 @@ impl Session {
     if self.state != Merging {
       return Err(IncorrectState(Merging, self.state));
     }
-    let merged = self.merged.get_ref();
-    let signed = self.signed.get_mut_ref();
+    let merged = self.merged.as_ref().unwrap();
+    let signed = self.signed.as_mut().unwrap();
 
     // Quick sanity checks
     if merged.input.len() != tx.input.len() {
@@ -400,8 +398,7 @@ impl Server {
 
     // Run through list, updating session states
     for (key, session) in self.sessions.mut_iter() {
-      let (secs, nanos) = div_mod_floor(now - session.switch_time, 1_000_000_000);
-      let time_since_switch = Duration::seconds(secs as i32) + Duration::nanoseconds(nanos as i32);
+      let time_since_switch = Duration::nanoseconds(precise_time_ns() as i64 - session.switch_time as i64);
 
       match session.state {
         Joining => {
