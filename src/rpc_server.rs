@@ -234,6 +234,19 @@ rpc_calls!{
     }
   },
 
+  #[doc="Checks whether a script pubkey can be proven to have no satisfying input. Returns 'spendable' or 'unspendable'."]
+  #[usage="<hex-encoded script>"]
+  #[coinjoin=false]
+  pub fn script_unspendable(rpc: &RpcCall, _: &mut IdleState, params: Vec<json::Json>) {
+    match params.len() {
+      1 => {
+        let script: Script = try!(decode_hex_param(params[0].clone(), PrependLength));
+        Ok(json::String(if script.is_provably_unspendable() { "unspendable" } else { "spendable" }.to_string()))
+      }
+      _ => Err(usage_error(rpc))
+    }
+  },
+
   #[doc="Starts a new coinjoin session"]
   #[usage="<target amount (satoshi)> <join duration (seconds)> <merge duration (seconds)>"]
   #[coinjoin=true]
