@@ -162,7 +162,7 @@ impl Bitcoind {
           while !done {
             // Borrow the blockchain mutably
             let mut blockchain = idle_state.blockchain.write();
-            println!("{}: Headers sync: last best tip {}",
+            println!("{}: Headers sync: last best tip {:x}",
                      idle_state.config.network, blockchain.best_tip_hash());
 
             // Request headers
@@ -177,7 +177,7 @@ impl Bitcoind {
                   for lone_header in headers.iter() {
                     match blockchain.add_header(lone_header.header) {
                       Err(e) => {
-                        println!("{}: Headers sync: failed to add {}: {}", 
+                        println!("{}: Headers sync: failed to add {:x}: {}", 
                                  idle_state.config.network, lone_header.header.bitcoin_hash(), e);
                       }
                        _ => {}
@@ -206,7 +206,7 @@ impl Bitcoind {
             let last_hash = {
               let mut utxo_set = idle_state.utxo_set.write();
               let last_hash = utxo_set.last_hash();
-              println!("{}: Starting UTXO sync from {}", idle_state.config.network, last_hash);
+              println!("{}: Starting UTXO sync from {:x}", idle_state.config.network, last_hash);
 
               // Unwind any reorg'd blooks
               for block in blockchain.rev_stale_iter(last_hash) {
@@ -260,7 +260,7 @@ impl Bitcoind {
                       match utxo_set.update(block, validation_level) {
                         Ok(_) => {}
                         Err(e) => {
-                          println!("{}: Failed to update UTXO set with block {}: {}",
+                          println!("{}: Failed to update UTXO set with block {:x}: {}",
                                    idle_state.config.network, block.bitcoin_hash(), e);
                           failed = true;
                         }
@@ -306,7 +306,7 @@ impl Bitcoind {
               let mut blockchain = idle_state.blockchain.write();
               // Delete old block data
               for hash in hashes_to_drop_data.move_iter() {
-                println!("{}, Dropping old blockdata for {}", idle_state.config.network, hash);
+                println!("{}, Dropping old blockdata for {:x}", idle_state.config.network, hash);
                 match blockchain.remove_txdata(hash) {
                   Err(e) => { println!("{}: Failed to remove txdata: {}",
                                        idle_state.config.network, e); }
@@ -318,7 +318,7 @@ impl Bitcoind {
               while block_count < inv_to_add_data.len() {
                 with_next_message!(idle_state.net_chan.recv(),
                   message::Block(block) => {
-                    println!("{}: Adding blockdata for {}",
+                    println!("{}: Adding blockdata for {:x}",
                              idle_state.config.network, block.bitcoin_hash());
                     match blockchain.add_txdata(block) {
                       Err(e) => { println!("{}: Failed to add txdata: {}",
@@ -445,7 +445,7 @@ fn idle_message<S:Deque<WalletAction>>(state_queue: &mut S,
     },
     message::Headers(headers) => {
       for lone_header in headers.iter() {
-        println!("{}, Received header: {}, ignoring.",
+        println!("{}, Received header: {:x}, ignoring.",
                  idle_state.config.network, lone_header.header.bitcoin_hash());
       }
     },
