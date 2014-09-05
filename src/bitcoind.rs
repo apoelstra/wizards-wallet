@@ -24,6 +24,7 @@ use std::io::timer::Timer;
 use std::sync::{Arc, RWLock};
 use std::time::Duration;
 use serialize::json;
+use time;
 
 use jsonrpc;
 
@@ -54,6 +55,8 @@ pub struct IdleState {
   pub sock: Socket,
   /// Network that we're on
   pub config: NetworkConfig,
+  /// Lowest debug level which we output messages for
+  debug_level: DebugLevel,
   /// Coinjoin server
   pub coinjoin: Option<coinjoin::server::Server>,
   /// Mutex for blockchain access
@@ -68,10 +71,22 @@ enum WalletAction {
   SaveToDisk,
 }
 
+#[deriving(Clone, PartialEq, Eq, PartialOrd, Ord, Show)]
+enum DebugLevel {
+  Debug,
+  Notice,
+  Status,
+  Warning,
+  Error,
+  Fatal
+}
+
 /// The main Bitcoin network listener structure
 pub struct Bitcoind {
   /// Configuration for this network
   config: NetworkConfig,
+  /// Lowest debug level which we output messages for
+  debug_level: DebugLevel,
   /// Receiver on which RPC commands come in
   rpc_rx: Receiver<(jsonrpc::Request, Sender<jsonrpc::JsonResult<json::Json>>)>,
 }
@@ -96,6 +111,25 @@ macro_rules! with_next_message(
   )
 )
 
+macro_rules! debug(
+  (($network:expr, $debug_level:expr), $level:ident, $fmt:expr $(, $arg:expr)*) => (
+    if $level >= $debug_level {
+      println!(concat!("{} [{}] {}: ", $fmt),
+               time::now().rfc3339(),
+               $level, $network,
+               $($arg),*);
+    }
+  );
+  ($bitcoind:ident, $level:ident, $fmt:expr $(, $arg:expr)*) => (
+    if $level >= $bitcoind.debug_level {
+      println!(concat!("{} [{}] {}: ", $fmt),
+               time::now().rfc3339(),
+               $level, $bitcoind.config.network,
+               $($arg),*);
+    }
+  );
+)
+
 impl Bitcoind {
   /// Constructor
   pub fn new(config: NetworkConfig,
@@ -103,7 +137,8 @@ impl Bitcoind {
              -> Bitcoind {
     Bitcoind {
       config: config,
-      rpc_rx: rpc_rx
+      rpc_rx: rpc_rx,
+      debug_level: Notice
     }
   }
 
@@ -117,23 +152,23 @@ impl Bitcoind {
     // Open socket
     let (chan, sock) = try!(self.start());
     // Load cached blockchain and UTXO set from disk
-    println!("{}: Loading blockchain...", self.config.network);
+    debug!(self, Status, "Loading blockchain...");
     // Load blockchain from disk
     let mut decoder = RawDecoder::new(BufferedReader::new(File::open(&self.config.blockchain_path)));
     let blockchain = match ConsensusDecodable::consensus_decode(&mut decoder) {
       Ok(blockchain) => blockchain,
       Err(e) => {
-        println!("{}: Failed to load blockchain: {:}, starting from genesis.", self.config.network, e);
+        debug!(self, Error, "Failed to load blockchain: {:}, starting from genesis.", e);
         Blockchain::new(self.config.network)
       }
     };
-    println!("{}: Loading utxo set...", self.config.network);
+    debug!(self, Status, "Loading utxo set...");
     // Load UTXO set from disk
     let mut decoder = RawDecoder::new(BufferedReader::new(File::open(&self.config.utxo_set_path)));
     let utxo_set = match ConsensusDecodable::consensus_decode(&mut decoder) {
       Ok(utxo_set) => utxo_set,
       Err(e) => {
-        println!("{}: Failed to load UTXO set: {:}, starting from genesis.", self.config.network, e);
+        debug!(self, Error, "Failed to load UTXO set: {:}, starting from genesis.", e);
         UtxoSet::new(self.config.network, BLOCKCHAIN_N_FULL_BLOCKS)
       }
     };
@@ -144,6 +179,7 @@ impl Bitcoind {
       // TODO: I'd rather this clone be some sort of take, but we need `self.config`
       //       to be around for the `Listener` trait getters below. Rework this.
       config: self.config.clone(),
+      debug_level: self.debug_level,
       blockchain: Arc::new(RWLock::new(blockchain)),
       utxo_set: Arc::new(RWLock::new(utxo_set)),
       coinjoin: None
@@ -157,13 +193,15 @@ impl Bitcoind {
       match state_queue.pop_front() {
         // Synchronize the blockchain with the peer
         Some(SyncBlockchain) => {
+          debug!(idle_state, Status, "Syncing blockheaders: last best tip {:x}",
+                 blockchain.best_tip_hash());
           // Do a headers-first sync of all blocks
           let mut done = false;
           while !done {
             // Borrow the blockchain mutably
             let mut blockchain = idle_state.blockchain.write();
-            println!("{}: Headers sync: last best tip {:x}",
-                     idle_state.config.network, blockchain.best_tip_hash());
+            debug!(idle_state, Notice, "Starting headers sync from {:x}",
+                   blockchain.best_tip_hash());
 
             // Request headers
             consume_err("Headers sync: failed to send `headers` message",
@@ -177,8 +215,8 @@ impl Bitcoind {
                   for lone_header in headers.iter() {
                     match blockchain.add_header(lone_header.header) {
                       Err(e) => {
-                        println!("{}: Headers sync: failed to add {:x}: {}", 
-                                 idle_state.config.network, lone_header.header.bitcoin_hash(), e);
+                        debug!(idle_state, Error, "Headers sync: failed to add {:x}: {}", 
+                               lone_header.header.bitcoin_hash(), e);
                       }
                        _ => {}
                     }
@@ -195,7 +233,7 @@ impl Bitcoind {
             }
           }
           // Done!
-          println!("{}: Done sync.", idle_state.config.network);
+          debug!(idle_state, Status, "Done headers sync.");
         },
         Some(SyncUtxoSet(validation_level)) => {
           let mut failed = false;
@@ -206,15 +244,14 @@ impl Bitcoind {
             let last_hash = {
               let mut utxo_set = idle_state.utxo_set.write();
               let last_hash = utxo_set.last_hash();
-              println!("{}: Starting UTXO sync from {:x}", idle_state.config.network, last_hash);
+              debug!(idle_state, Status, "Starting UTXO sync from {:x}", last_hash);
 
               // Unwind any reorg'd blooks
               for block in blockchain.rev_stale_iter(last_hash) {
-                println!("{}: Rewinding stale block {}",
-                         idle_state.config.network, block.bitcoin_hash());
+                debug!(idle_state, Notice, "Rewinding stale block {}", block.bitcoin_hash());
                 if !utxo_set.rewind(block) {
-                  println!("{}: Failed to rewind stale block {}",
-                           idle_state.config.network, block.bitcoin_hash());
+                  debug!(idle_state, Notice, " Failed to rewind stale block {}",
+                         block.bitcoin_hash());
                 }
               }
               utxo_set.last_hash()
@@ -228,8 +265,8 @@ impl Bitcoind {
               // Every so often, send a new message
               if count % UTXO_SYNC_N_BLOCKS == 0 || iter.is_empty() {
                 let mut utxo_set = idle_state.utxo_set.write();
-                println!("{}: UTXO sync: n_blocks {} n_utxos {} pruned {}",
-                         idle_state.config.network, count, utxo_set.n_utxos(), utxo_set.n_pruned());
+                debug!(idle_state, Notice, "UTXO sync: n_blocks {} n_utxos {} pruned {}",
+                       count, utxo_set.n_utxos(), utxo_set.n_pruned());
                 consume_err("UTXO sync: failed to send `getdata` message",
                   idle_state.sock.send_message(message::GetData(cache.clone())));
 
@@ -242,8 +279,8 @@ impl Bitcoind {
                       block_count += 1;
                     }
                     message::NotFound(_) => {
-                      println!("{}: UTXO sync: received `notfound` from sync peer, failing sync.",
-                               idle_state.config.network);
+                      debug!(idle_state, Error,
+                             "UTXO sync: received `notfound` from sync peer, failing sync.");
                       failed = true;
                       block_count += 1;
                     }
@@ -260,15 +297,16 @@ impl Bitcoind {
                       match utxo_set.update(block, validation_level) {
                         Ok(_) => {}
                         Err(e) => {
-                          println!("{}: Failed to update UTXO set with block {:x}: {}",
-                                   idle_state.config.network, block.bitcoin_hash(), e);
+                          debug!(idle_state, Error,
+                                 "Failed to update UTXO set with block {:x}: {}",
+                                 block.bitcoin_hash(), e);
                           failed = true;
                         }
                       }
                     }
                     None => {
-                      println!("{}: Uh oh, requested block {} but didn't get it!",
-                               idle_state.config.network, recv_inv.hash);
+                      debug!(idle_state, Error, "Uh oh, requested block {:x} but didn't get it!",
+                             recv_inv.hash);
                       failed = true;
                     }
                   }
@@ -278,8 +316,7 @@ impl Bitcoind {
             }
           }
           if failed {
-            println!("{}: Failed to sync UTXO set, will resync chain and try again.",
-                     idle_state.config.network);
+            debug!(idle_state, Error, "Failed to sync UTXO set, will resync chain and try again.");
             state_queue.push(SyncBlockchain);
             state_queue.push(SyncUtxoSet(validation_level));
           } else {
@@ -306,10 +343,9 @@ impl Bitcoind {
               let mut blockchain = idle_state.blockchain.write();
               // Delete old block data
               for hash in hashes_to_drop_data.move_iter() {
-                println!("{}, Dropping old blockdata for {:x}", idle_state.config.network, hash);
+                debug!(idle_state, Notice, "Dropping old blockdata for {:x}", hash);
                 match blockchain.remove_txdata(hash) {
-                  Err(e) => { println!("{}: Failed to remove txdata: {}",
-                                       idle_state.config.network, e); }
+                  Err(e) => { debug!(idle_state, Error, "Failed to remove txdata: {}", e); }
                   _ => {}
                 }
               }
@@ -318,19 +354,17 @@ impl Bitcoind {
               while block_count < inv_to_add_data.len() {
                 with_next_message!(idle_state.net_chan.recv(),
                   message::Block(block) => {
-                    println!("{}: Adding blockdata for {:x}",
-                             idle_state.config.network, block.bitcoin_hash());
+                    debug!(idle_state, Notice, "Adding blockdata for {:x}", block.bitcoin_hash());
                     match blockchain.add_txdata(block) {
-                      Err(e) => { println!("{}: Failed to add txdata: {}",
-                                           idle_state.config.network, e); }
+                      Err(e) => { debug!(idle_state, Error, "Failed to add txdata: {}", e); }
                       _ => {}
                     }
                     block_count += 1;
                   }
                   message::NotFound(_) => {
-                    println!("{}: Blockchain sync: received `notfound` on full blockdata, \
-                              will not be able to handle reorgs past this block.",
-                             idle_state.config.network);
+                    debug!(idle_state, Error,
+                           "Blockchain sync: received `notfound` on full blockdata, \
+                           will not be able to handle reorgs past this block.");
                     block_count += 1;
                   }
                   message::Ping(nonce) => {
@@ -340,11 +374,12 @@ impl Bitcoind {
                 )
               }
             }
+            debug!(idle_state, Status, "Done UTXO sync.");
           }
         },
         // Idle loop
         None => {
-          println!("{}: Idling...", idle_state.config.network);
+          debug!(idle_state, Debug, "Idling...");
           nu_select!(
             message from idle_state.net_chan => {
               idle_message(&mut state_queue, &mut idle_state, message);
@@ -366,25 +401,30 @@ impl Bitcoind {
           let blockchain_path = idle_state.config.blockchain_path.clone();
           let utxo_set_path = idle_state.config.utxo_set_path.clone();
           let network = idle_state.config.network;
+          let debug_level = idle_state.debug_level;
           spawn(proc() {
             // Lock the blockchain for reading while we are saving it.
             {
               let blockchain = bc_arc.read();
-              println!("{}: Saving blockchain...", network);
+              debug!((network, debug_level), Status, "Saving blockchain...");
               let mut encoder = RawEncoder::new(BufferedWriter::new(File::open_mode(&blockchain_path, Open, Write)));
               match blockchain.consensus_encode(&mut encoder) {
-                Ok(()) => { println!("{}: Successfully saved blockchain.", network) },
-                Err(e) => { println!("{}: Failed to write blockchain: {:}", network, e); }
+                Ok(()) => { debug!((network, debug_level), Status,
+                                   "Done saving blockchain."); },
+                Err(e) => { debug!((network, debug_level), Error,
+                            "Failed to write blockchain: {}", e); }
               }
             }
             // Lock the UTXO set for reading while we are saving it.
             {
               let utxo_set = us_arc.read();
-              println!("{}: Saving UTXO set...", network);
+              debug!((network, debug_level), Status, "Saving UTXO set...");
               let mut encoder = RawEncoder::new(BufferedWriter::new(File::open_mode(&utxo_set_path, Open, Write)));
               match utxo_set.consensus_encode(&mut encoder) {
-                Ok(()) => { println!("{}: Successfully saved UTXO set.", network) },
-                Err(e) => { println!("{}: Failed to write UTXO set: {:}", network, e); }
+                Ok(()) => { debug!((network, debug_level), Status,
+                                   "Done saving UTXO set.") },
+                Err(e) => { debug!((network, debug_level), Error,
+                                   "Failed to write UTXO set: {:}", e); }
               }
             }
           });
@@ -424,20 +464,19 @@ fn idle_message<S:Deque<WalletAction>>(state_queue: &mut S,
     }
     message::Block(block) => {
       let mut lock = idle_state.blockchain.write();
-      println!("{}, Received block: {:x}", idle_state.config.network, block.bitcoin_hash());
+      debug!(idle_state, Notice, "Received block: {:x}", block.bitcoin_hash());
       if lock.get_block(block.header.prev_blockhash).is_some() {
         // non-orphan, add it
-        println!("{}, Received non-orphan, adding to blockchain...", idle_state.config.network);
+        debug!(idle_state, Notice, "Received non-orphan, adding to blockchain...");
         match lock.add_block(block) {
           Err(e) => {
-            println!("{}, Failed to add block: {}", idle_state.config.network, e);
+            debug!(idle_state, Error, "Failed to add block: {}", e);
           }
           _ => {}
         }
-        println!("{}, Done adding block.", idle_state.config.network);
+        debug!(idle_state, Notice, "Done adding block.");
       } else {
-        println!("{}, Received an orphan, syncing the chain to clear up the confusion.",
-                 idle_state.config.network);
+        debug!(idle_state, Notice, "Received orphan, resyncing blockchain...");
         state_queue.push(SyncBlockchain);
       }
       // In either case we want to sync the UTXO set afterward
@@ -445,19 +484,19 @@ fn idle_message<S:Deque<WalletAction>>(state_queue: &mut S,
     },
     message::Headers(headers) => {
       for lone_header in headers.iter() {
-        println!("{}, Received header: {:x}, ignoring.",
-                 idle_state.config.network, lone_header.header.bitcoin_hash());
+        debug!(idle_state, Debug, "Received header: {:x}, ignoring.",
+               lone_header.header.bitcoin_hash());
       }
     },
     message::Inv(inv) => {
-      println!("{}, Received inv.", idle_state.config.network);
+      debug!(idle_state, Debug, "Received inv.");
       let sendmsg = message::GetData(inv);
       // Send
       consume_err("Warning: failed to send getdata in response to inv",
         idle_state.sock.send_message(sendmsg));
     }
     message::Tx(_) => {
-      println!("Received tx, ignoring");
+      debug!(idle_state, Debug, "Received tx, ignoring");
     }
     message::GetData(_) => {}
     message::NotFound(_) => {}
