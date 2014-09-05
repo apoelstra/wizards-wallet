@@ -364,7 +364,7 @@ impl Server {
 
   /// Retrieves the current session, or None if there is not one
   pub fn current_session<'a>(&'a self) -> Option<&'a Session> {
-    unsafe { self.current.to_option() }
+    unsafe { self.current.as_ref() }
   }
 
   /// Retrieves the current session, or None if there is not one

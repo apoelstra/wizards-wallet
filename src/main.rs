@@ -71,6 +71,7 @@ pub mod coinjoin;
 pub mod constants;
 pub mod rpc_server;
 pub mod user_data;
+pub mod wallet;
 
 /// Entry point
 #[cfg(not(test))]

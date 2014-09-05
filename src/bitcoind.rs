@@ -19,7 +19,7 @@
 use std::collections::{DList, Deque};
 use std::default::Default;
 use std::io::{File, Open, Write, BufferedReader, BufferedWriter};
-use std::io::IoResult;
+use std::io::{FileNotFound, IoResult};
 use std::io::timer::Timer;
 use std::sync::{Arc, RWLock};
 use std::time::Duration;
@@ -47,6 +47,7 @@ use constants::UTXO_SYNC_N_BLOCKS;
 use constants::SAVE_FREQUENCY;
 use rpc_server::handle_rpc;
 use user_data::NetworkConfig;
+use wallet::{load_wallet, save_wallet, default_wallet};
 
 /// Data used by an idling wallet.
 pub struct IdleState {
@@ -55,8 +56,6 @@ pub struct IdleState {
   pub sock: Socket,
   /// Network that we're on
   pub config: NetworkConfig,
-  /// Lowest debug level which we output messages for
-  debug_level: DebugLevel,
   /// Coinjoin server
   pub coinjoin: Option<coinjoin::server::Server>,
   /// Mutex for blockchain access
@@ -71,22 +70,29 @@ enum WalletAction {
   SaveToDisk,
 }
 
-#[deriving(Clone, PartialEq, Eq, PartialOrd, Ord, Show)]
-enum DebugLevel {
-  Debug,
-  Notice,
-  Status,
-  Warning,
-  Error,
-  Fatal
-}
+user_enum!(
+  #[doc="An error message severity level"]
+  #[deriving(Clone, PartialEq, Eq, PartialOrd, Ord)]
+  pub enum DebugLevel {
+    #[doc="Developer interest only"]
+    Debug <-> "DEBUG",
+    #[doc="Detailed information about program state"]
+    Notice <-> "NOTE",
+    #[doc="High-level information about program state"]
+    Status <-> "STATUS",
+    #[doc="Something went possibly wrong."]
+    Warning <-> "WARN",
+    #[doc="Something went wrong."]
+    Error <-> "ERROR",
+    #[doc="Something went wrong, and the program must end because of it."]
+    Fatal <-> "FATAL"
+  }
+)
 
 /// The main Bitcoin network listener structure
 pub struct Bitcoind {
   /// Configuration for this network
   config: NetworkConfig,
-  /// Lowest debug level which we output messages for
-  debug_level: DebugLevel,
   /// Receiver on which RPC commands come in
   rpc_rx: Receiver<(jsonrpc::Request, Sender<jsonrpc::JsonResult<json::Json>>)>,
 }
@@ -111,18 +117,27 @@ macro_rules! with_next_message(
   )
 )
 
+macro_rules! fatal(
+  ($network:expr, $fmt:expr $(, $arg:expr)*) => (
+    fail!(concat!("{} [{:6}] {}: ", $fmt),
+          time::now().rfc3339(),
+          Fatal, $network,
+          $($arg),*);
+  )
+)
+
 macro_rules! debug(
   (($network:expr, $debug_level:expr), $level:ident, $fmt:expr $(, $arg:expr)*) => (
     if $level >= $debug_level {
-      println!(concat!("{} [{}] {}: ", $fmt),
+      println!(concat!("{} [{:6}] {}: ", $fmt),
                time::now().rfc3339(),
                $level, $network,
                $($arg),*);
     }
   );
   ($bitcoind:ident, $level:ident, $fmt:expr $(, $arg:expr)*) => (
-    if $level >= $bitcoind.debug_level {
-      println!(concat!("{} [{}] {}: ", $fmt),
+    if $level >= $bitcoind.config.debug_level {
+      println!(concat!("{} [{:6}] {}: ", $fmt),
                time::now().rfc3339(),
                $level, $bitcoind.config.network,
                $($arg),*);
@@ -137,8 +152,7 @@ impl Bitcoind {
              -> Bitcoind {
     Bitcoind {
       config: config,
-      rpc_rx: rpc_rx,
-      debug_level: Notice
+      rpc_rx: rpc_rx
     }
   }
 
@@ -149,6 +163,32 @@ impl Bitcoind {
     let mut state_queue = DList::new();
 
     // Startup
+    // Read wallet
+    debug!(self, Status, "Reading wallet...");
+    let wallet = load_wallet(&self.config);
+    let wallet = if wallet.is_err() {
+      let err = wallet.err().unwrap();
+      if err.kind == FileNotFound {
+        debug!(self, Status, "Wallet not found. Creating new one.");
+        let new = default_wallet(self.config.network);
+        match new {
+          Err(e) => fatal!(self.config.network, "Unable to create wallet: {}", e),
+          Ok(w) => {
+            match save_wallet(&self.config, &w) {
+              Err(e) => debug!(self, Error, "Failed to save wallet: {}", e),
+              Ok(_) => {}
+            }
+            w
+          }
+        }
+      } else {
+        fatal!(self.config.network, "Unable to read wallet: {}", err);
+      }
+    } else {
+      wallet.unwrap()
+    };
+    debug!(self, Status, "Loaded wallet.");
+
     // Open socket
     let (chan, sock) = try!(self.start());
     // Load cached blockchain and UTXO set from disk
@@ -179,7 +219,6 @@ impl Bitcoind {
       // TODO: I'd rather this clone be some sort of take, but we need `self.config`
       //       to be around for the `Listener` trait getters below. Rework this.
       config: self.config.clone(),
-      debug_level: self.debug_level,
       blockchain: Arc::new(RWLock::new(blockchain)),
       utxo_set: Arc::new(RWLock::new(utxo_set)),
       coinjoin: None
@@ -193,13 +232,13 @@ impl Bitcoind {
       match state_queue.pop_front() {
         // Synchronize the blockchain with the peer
         Some(SyncBlockchain) => {
+          // Borrow the blockchain mutably
+          let mut blockchain = idle_state.blockchain.write();
           debug!(idle_state, Status, "Syncing blockheaders: last best tip {:x}",
                  blockchain.best_tip_hash());
           // Do a headers-first sync of all blocks
           let mut done = false;
           while !done {
-            // Borrow the blockchain mutably
-            let mut blockchain = idle_state.blockchain.write();
             debug!(idle_state, Notice, "Starting headers sync from {:x}",
                    blockchain.best_tip_hash());
 
@@ -401,7 +440,7 @@ impl Bitcoind {
           let blockchain_path = idle_state.config.blockchain_path.clone();
           let utxo_set_path = idle_state.config.utxo_set_path.clone();
           let network = idle_state.config.network;
-          let debug_level = idle_state.debug_level;
+          let debug_level = idle_state.config.debug_level;
           spawn(proc() {
             // Lock the blockchain for reading while we are saving it.
             {

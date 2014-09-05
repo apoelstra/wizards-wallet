@@ -28,14 +28,16 @@ use xdg;
 
 use bitcoin::network::constants::{Network, Bitcoin, BitcoinTestnet};
 
-/// Returns a path to the user's configuration file on disk
+use bitcoind::{DebugLevel, Status};
+
+/// Returns the path to the user's configuration file on disk
 pub fn config_path() -> Path {
   let dirs = xdg::XdgDirs::new();
   dirs.want_write_config("wizards-wallet/wizards-wallet.conf")
 }
 
-/// Returns a path to the blockchain file on disk
-pub fn blockchain_path(network: Network) -> Path {
+/// Returns the default path to the blockchain file on disk
+fn blockchain_path(network: Network) -> Path {
   let dirs = xdg::XdgDirs::new();
   match network {
     Bitcoin => dirs.want_write_cache("wizards-wallet/blockchain.bitcoin.dat"),
@@ -43,12 +45,21 @@ pub fn blockchain_path(network: Network) -> Path {
   }
 }
 
-/// Returns a path to the UTXO cache on disk
-pub fn utxo_set_path(network: Network) -> Path {
+/// Returns the default path to the UTXO cache on disk
+fn utxo_set_path(network: Network) -> Path {
   let dirs = xdg::XdgDirs::new();
   match network {
     Bitcoin => dirs.want_write_cache("wizards-wallet/utxoset.bitcoin.dat"),
     BitcoinTestnet => dirs.want_write_cache("wizards-wallet/utxoset.testnet.dat")
+  }
+}
+
+/// Returns the default path to the user's wallet file on disk
+fn wallet_path(network: Network) -> Path {
+  let dirs = xdg::XdgDirs::new();
+  match network {
+    Bitcoin => dirs.want_write_config("wizards-wallet/wallet.bitcoin.toml"),
+    BitcoinTestnet => dirs.want_write_config("wizards-wallet/wallet.testnet.toml")
   }
 }
 
@@ -70,7 +81,11 @@ pub struct NetworkConfig {
   /// Path to the on-disk blockchain cache
   pub blockchain_path: Path,
   /// Path to the on-disk UTXO set cache
-  pub utxo_set_path: Path
+  pub utxo_set_path: Path,
+  /// Path to the user's wallet
+  pub wallet_path: Path,
+  /// Path to the on-disk UTXO set cache
+  pub debug_level: DebugLevel
 }
 
 #[deriving(Decodable)]
@@ -81,7 +96,9 @@ struct TomlNetworkConfig {
   rpc_server_port: Option<u16>,
   coinjoin_on: Option<bool>,
   blockchain_path: Option<Path>,
-  utxo_set_path: Option<Path>
+  utxo_set_path: Option<Path>,
+  wallet_path: Option<Path>,
+  debug_level: Option<DebugLevel>
 }
 
 /// A list of user configuration for all networks
@@ -165,7 +182,9 @@ fn read_configuration(path: &Path) -> IoResult<Config> {
       rpc_server_port: toml_config.rpc_server_port.unwrap_or(DEFAULT_RPC_SERVER_PORT),
       coinjoin_on: toml_config.coinjoin_on.unwrap_or(false),
       blockchain_path: toml_config.blockchain_path.unwrap_or(blockchain_path(network)),
-      utxo_set_path: toml_config.utxo_set_path.unwrap_or(utxo_set_path(network))
+      utxo_set_path: toml_config.utxo_set_path.unwrap_or(utxo_set_path(network)),
+      wallet_path: toml_config.wallet_path.unwrap_or(wallet_path(network)),
+      debug_level: toml_config.debug_level.unwrap_or(Status)
     });
   }
   Ok(Config(ret))
@@ -195,7 +214,9 @@ pub fn load_configuration(path: &Path) -> Option<Config> {
             rpc_server_port: DEFAULT_RPC_SERVER_PORT,
             coinjoin_on: false,
             blockchain_path: blockchain_path(Bitcoin),
-            utxo_set_path: utxo_set_path(Bitcoin)
+            utxo_set_path: utxo_set_path(Bitcoin),
+            wallet_path: wallet_path(Bitcoin),
+            debug_level: Status
           }]))
       }
       // But for anything else, the user must've made a mistake. Better to do nothing.
