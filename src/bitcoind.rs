@@ -40,6 +40,7 @@ use bitcoin::network::message_blockdata::{GetHeadersMessage, Inventory, InvBlock
 use bitcoin::network::serialize::{BitcoinHash, RawEncoder, RawDecoder};
 use bitcoin::util::patricia_tree::PatriciaTree;
 use bitcoin::util::misc::consume_err;
+use bitcoin::wallet::wallet::Wallet;
 
 use coinjoin;
 use constants::BLOCKCHAIN_N_FULL_BLOCKS;
@@ -61,7 +62,9 @@ pub struct IdleState {
   /// Mutex for blockchain access
   pub blockchain: Arc<RWLock<Blockchain>>,
   /// Mutex for UTXO set access
-  pub utxo_set: Arc<RWLock<UtxoSet>>
+  pub utxo_set: Arc<RWLock<UtxoSet>>,
+  /// The wallet
+  pub wallet: Wallet
 }
 
 enum WalletAction {
@@ -221,7 +224,8 @@ impl Bitcoind {
       config: self.config.clone(),
       blockchain: Arc::new(RWLock::new(blockchain)),
       utxo_set: Arc::new(RWLock::new(utxo_set)),
-      coinjoin: None
+      coinjoin: None,
+      wallet: wallet
     };
 
     // Eternal state machine loop

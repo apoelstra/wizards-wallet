@@ -31,6 +31,7 @@ use bitcoin::util::hash::Sha256dHash;
 use bitcoin::util::misc::consume_err;
 use bitcoin::blockdata::script::Script;
 use bitcoin::blockdata::transaction::Transaction;
+use bitcoin::wallet::wallet::{AccountNotFound, External};
 use jsonrpc;
 use jsonrpc::error::{standard_error, Error, InvalidParams, MethodNotFound};
 use phf::PhfOrderedMap;
@@ -38,6 +39,7 @@ use phf::PhfOrderedMap;
 use bitcoind::IdleState;
 use coinjoin::server::{Complete, Server, Session, SessionId};
 use coinjoin::CoinjoinError;
+use wallet::save_wallet;
 
 pub type JsonResult = jsonrpc::JsonResult<json::Json>;
 
@@ -264,8 +266,24 @@ rpc_calls!{
         // Update the server state
         let server = idle_state.coinjoin.get_mut_ref();
         server.update_all();
+        // Obtain a donation address
+        let mut address = idle_state.wallet.new_address("coinjoin", External);
+        if address == Err(AccountNotFound) {
+          try!(idle_state.wallet.account_insert("coinjoin".to_string())
+                 .map_err(|e| bitcoin_json_error(WalletError,
+                                                 Some(json::String(e.to_string())))));
+          address = idle_state.wallet.new_address("coinjoin", External);
+        }
+        let address = try!(address.map_err(|e| bitcoin_json_error(WalletError,
+                                               Some(json::String(e.to_string())))));
+
+        // Saveout the wallet before using the address
+        try!(save_wallet(&idle_state.config, &idle_state.wallet)
+                 .map_err(|e| bitcoin_json_error(WalletError,
+                                                 Some(json::String(e.to_string())))));
+
         // Add the new sesion
-        let session = try!(Session::new(target, join_duration, expiry_duration)
+        let session = try!(Session::new(target, join_duration, expiry_duration, address)
                              .map_err(|e| bitcoin_json_error(BadRng,
                                                              Some(json::String(e.to_string())))));
         let id = session.id();
@@ -380,7 +398,8 @@ enum BitcoinJsonError {
   BlockNotFound,
   CoinjoinError(CoinjoinError),
   InvalidTx,
-  SessionNotFound
+  SessionNotFound,
+  WalletError
 }
 
 /// Decode a Json parameter
@@ -440,6 +459,11 @@ fn bitcoin_json_error(code: BitcoinJsonError, data: Option<json::Json>) -> Error
     SessionNotFound => Error {
       code: -5,
       message: "Coinjoin session not found".to_string(),
+      data: data
+    },
+    WalletError => Error {
+      code: -6,
+      message: "Wallet error".to_string(),
       data: data
     }
   }

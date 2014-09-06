@@ -26,14 +26,17 @@ use serialize::json;
 use serialize::{Decodable, Decoder, Encodable, Encoder};
 use time::precise_time_ns;
 
-use bitcoin::blockdata::transaction::{Transaction, TxIn};
+use bitcoin::blockdata::transaction::{Transaction, TxIn, PayToPubkeyHash};
 use bitcoin::blockdata::utxoset::UtxoSet;
 use bitcoin::network::serialize::{BitcoinHash, serialize_hex};
+use bitcoin::util::base58::ToBase58;
+use bitcoin::wallet::address::Address;
+
 use crypto::fortuna::Fortuna;
 
-use coinjoin::{CoinjoinError, DuplicateInput, IncorrectState,
+use coinjoin::{CoinjoinError, DuplicateInput, IncorrectState, InsufficientFee,
                NoNewSignedInputs, NonZeroLocktime, NoTargetOutput,
-               OutputsExceedInputs, UnexpectedInput, UnexpectedOutput,
+               InputsExceedOutputs, OutputsExceedInputs, UnexpectedInput, UnexpectedOutput,
                UnknownInput, UnknownVersion, WrongInputCount, WrongOutputCount};
 
 /// Current state of the session
@@ -80,7 +83,8 @@ pub struct Session {
   target_value: u64,
   unsigned: Vec<Transaction>,
   merged: Option<Transaction>,
-  signed: Option<Transaction>
+  signed: Option<Transaction>,
+  donation_address: Address
 }
 
 impl json::ToJson for Session {
@@ -101,6 +105,8 @@ impl json::ToJson for Session {
       Joining => {
         obj.insert("time_until_merge".to_string(),
                    (self.join_duration - time_since_switch).num_milliseconds().to_json());
+        obj.insert("donation_address".to_string(),
+                   json::String(self.donation_address.to_base58check()));
       }
       Complete => {
         obj.insert("txid".to_string(), self.signed.as_ref().unwrap().bitcoin_hash().to_json());
@@ -149,7 +155,8 @@ impl Session {
   /// Creates a new session with a random ID
   pub fn new(target_value: u64,
              join_duration: Duration,
-             expiry_duration: Duration)
+             expiry_duration: Duration,
+             donation_address: Address)
              -> IoResult<Session> {
     use std::rand;
     let mut csrng: Fortuna = {
@@ -169,7 +176,8 @@ impl Session {
       expiry_duration: expiry_duration,
       unsigned: vec![],
       merged: None,
-      signed: None
+      signed: None,
+      donation_address: donation_address
     })
   }
 
@@ -197,6 +205,24 @@ impl Session {
     if !tx.output.iter().any(|o| o.value == self.target_value) {
       return Err(NoTargetOutput(self.target_value));
     }
+
+    // Check for fee
+    let mut received_fee = 0;
+    let required_fee = tx.input.len() as u64 * 200 + tx.output.len() as u64 * 50;
+    for out in tx.output.iter() {
+      match out.classify(self.donation_address.network) {
+        PayToPubkeyHash(ref addr) => {
+          if addr == &self.donation_address {
+            received_fee += out.value;
+          }
+        }
+        _ => {}
+      }
+    }
+    if received_fee < required_fee {
+      return Err(InsufficientFee(received_fee, required_fee));
+    }
+
     // Check that we know all the inputs, and that they have
     // not already been used in this join
     let mut total_in = 0;
@@ -221,6 +247,10 @@ impl Session {
     // TODO: there should be a session option to allow this, for doing transfers
     if total_in < total_out {
       return Err(OutputsExceedInputs(total_out, total_in));
+    }
+    // TODO: there should be a session option to allow this and/or disabling donations
+    if total_in > total_out {
+      return Err(InputsExceedOutputs(total_in, total_out));
     }
 
     // All Ok, add it

@@ -31,6 +31,11 @@ pub enum CoinjoinError {
   DuplicateInput(Sha256dHash, uint),
   /// Session is in the wrong state for this action (actual, expected)
   IncorrectState(SessionState, SessionState),
+  /// Tx total input value exceeds the total output value -- these should match,
+  /// and fees be added using the donation address
+  InputsExceedOutputs(u64, u64),
+  /// Not enough fee was sent to the donation address (received, expected)
+  InsufficientFee(u64, u64),
   /// Signed TX did not actually introduce new signed inputs
   NoNewSignedInputs,
   /// Tx had a nonzero locktime
