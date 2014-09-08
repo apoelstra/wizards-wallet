@@ -169,7 +169,7 @@ impl Bitcoind {
     // Read wallet
     debug!(self, Status, "Reading wallet...");
     let wallet = load_wallet(&self.config);
-    let wallet = if wallet.is_err() {
+    let mut wallet = if wallet.is_err() {
       let err = wallet.err().unwrap();
       if err.kind == FileNotFound {
         debug!(self, Status, "Wallet not found. Creating new one.");
@@ -215,6 +215,12 @@ impl Bitcoind {
         UtxoSet::new(self.config.network, BLOCKCHAIN_N_FULL_BLOCKS)
       }
     };
+
+    debug!(self, Status, "Building address index for wallet.");
+    wallet.build_index(&utxo_set);
+    debug!(self, Status, "Done building address index.");
+    debug!(self, Debug, "Wallet coinjoin balance: {}", wallet.balance("coinjoin"));
+    debug!(self, Debug, "Wallet total balance: {}", wallet.total_balance());
     // Setup idle state
     let mut idle_state = IdleState {
       sock: sock,
