@@ -120,19 +120,9 @@ macro_rules! with_next_message(
           ConnectionFailed(e, tx) => {
             debug!($idle_state, Error, "Network error: `{}`, reconnecting.", e);
             tx.send(());
-            loop {
-              timer::sleep(Duration::seconds(3));
-              match $bitcoind.start() {
-                Ok((chan, sock)) => {
-                  $idle_state.net_chan = chan;
-                  $idle_state.sock = sock;
-                  break;
-                }
-                Err(e) => {
-                  debug!($idle_state, Error, "Error reconnecting: `{}`, trying again..", e);
-                }
-              }
-            }
+            let (chan, sock) = $bitcoind.loop_connect();
+            $idle_state.net_chan = chan;
+            $idle_state.sock = sock;
           }
         };
       }
@@ -180,6 +170,16 @@ impl Bitcoind {
     }
   }
 
+  fn loop_connect(&self) -> (Receiver<SocketResponse>, Socket) {
+    loop {
+      timer::sleep(Duration::seconds(3));
+      match self.start() {
+        Ok((chan, sock)) => { return (chan, sock); }
+        Err(e) => { debug!(self, Error, "Error connecting: `{}`, trying again..", e); }
+      }
+    }
+  }
+
   /// Run the state machine
   pub fn listen(&mut self) -> IoResult<()> {
     let mut timer = Timer::new().unwrap();  // TODO: can this fail? what should we do?
@@ -190,31 +190,31 @@ impl Bitcoind {
     // Read wallet
     debug!(self, Status, "Reading wallet...");
     let wallet = load_wallet(&self.config);
-    let mut wallet = if wallet.is_err() {
-      let err = wallet.err().unwrap();
-      if err.kind == FileNotFound {
-        debug!(self, Status, "Wallet not found. Creating new one.");
-        let new = default_wallet(self.config.network);
-        match new {
-          Err(e) => fatal!(self.config.network, "Unable to create wallet: {}", e),
-          Ok(w) => {
-            match save_wallet(&self.config, &w) {
-              Err(e) => debug!(self, Error, "Failed to save wallet: {}", e),
-              Ok(_) => {}
+    let mut wallet = match wallet {
+      Err(err) => {
+        if err.kind == FileNotFound {
+          debug!(self, Status, "Wallet not found. Creating new one.");
+          let new = default_wallet(self.config.network);
+          match new {
+            Err(e) => fatal!(self.config.network, "Unable to create wallet: {}", e),
+            Ok(w) => {
+              match save_wallet(&self.config, &w) {
+                Err(e) => debug!(self, Error, "Failed to save wallet: {}", e),
+                Ok(_) => {}
+              }
+              w
             }
-            w
           }
+        } else {
+          fatal!(self.config.network, "Unable to read wallet: {}", err);
         }
-      } else {
-        fatal!(self.config.network, "Unable to read wallet: {}", err);
-      }
-    } else {
-      wallet.unwrap()
+      },
+      Ok(w) => w
     };
     debug!(self, Status, "Loaded wallet.");
 
     // Open socket
-    let (chan, sock) = try!(self.start());
+    let (chan, sock) = self.loop_connect();
     // Load cached blockchain and UTXO set from disk
     debug!(self, Status, "Loading blockchain...");
     // Load blockchain from disk
@@ -473,19 +473,9 @@ impl Bitcoind {
             }
           );
           if replace_socket {
-            loop {
-              timer::sleep(Duration::seconds(3));
-              match self.start() {
-                Ok((chan, sock)) => {
-                  idle_state.net_chan = chan;
-                  idle_state.sock = sock;
-                  break;
-                }
-                Err(e) => {
-                  debug!(idle_state, Error, "Error reconnecting: `{}`, trying again..", e);
-                }
-              }
-            }
+            let (chan, sock) = self.loop_connect();
+            idle_state.net_chan = chan;
+            idle_state.sock = sock;
           }
         },
         // Temporary states
