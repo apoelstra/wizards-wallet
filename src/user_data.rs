@@ -78,6 +78,8 @@ pub struct NetworkConfig {
   pub rpc_server_port: u16,
   /// Whether to operate a coinjoin server as part of RPC
   pub coinjoin_on: bool,
+  /// Whether to allow wallet commands over RPC
+  pub wallet_rpc: bool,
   /// Path to the on-disk blockchain cache
   pub blockchain_path: Path,
   /// Path to the on-disk UTXO set cache
@@ -95,6 +97,7 @@ struct TomlNetworkConfig {
   rpc_server_addr: Option<String>,
   rpc_server_port: Option<u16>,
   coinjoin_on: Option<bool>,
+  wallet_rpc: Option<bool>,
   blockchain_path: Option<Path>,
   utxo_set_path: Option<Path>,
   wallet_path: Option<Path>,
@@ -181,6 +184,7 @@ fn read_configuration(path: &Path) -> IoResult<Config> {
       rpc_server_addr: toml_config.rpc_server_addr.unwrap_or(DEFAULT_RPC_SERVER_ADDR.to_string()),
       rpc_server_port: toml_config.rpc_server_port.unwrap_or(DEFAULT_RPC_SERVER_PORT),
       coinjoin_on: toml_config.coinjoin_on.unwrap_or(false),
+      wallet_rpc: toml_config.wallet_rpc.unwrap_or(false),
       blockchain_path: toml_config.blockchain_path.unwrap_or(blockchain_path(network)),
       utxo_set_path: toml_config.utxo_set_path.unwrap_or(utxo_set_path(network)),
       wallet_path: toml_config.wallet_path.unwrap_or(wallet_path(network)),
@@ -213,6 +217,7 @@ pub fn load_configuration(path: &Path) -> Option<Config> {
             rpc_server_addr: DEFAULT_RPC_SERVER_ADDR.to_string(),
             rpc_server_port: DEFAULT_RPC_SERVER_PORT,
             coinjoin_on: false,
+            wallet_rpc: false,
             blockchain_path: blockchain_path(Bitcoin),
             utxo_set_path: utxo_set_path(Bitcoin),
             wallet_path: wallet_path(Bitcoin),

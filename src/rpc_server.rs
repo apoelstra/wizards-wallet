@@ -54,6 +54,7 @@ pub struct RpcCall {
   desc: &'static str,
   usage: &'static str,
   coinjoin: bool,
+  wallet: bool,
   call: fn(&RpcCall, &mut IdleState, Vec<json::Json>) -> JsonResult
 }
 
@@ -62,6 +63,7 @@ macro_rules! rpc_calls(
   ( $( #[doc=$doc:tt]
        #[usage=$usage:tt]
        #[coinjoin=$coinjoin:tt]
+       #[wallet=$wallet:tt]
        pub fn $name:ident($($param:tt: $paramty:ty),+) $code:expr),+ ) => (
     $(
       // `tt` token trees can only be passed to a macro. On the other hand,
@@ -87,6 +89,7 @@ macro_rules! rpc_calls(
             desc: $doc,
             usage: $usage,
             coinjoin: $coinjoin,
+            wallet: $wallet,
             call: $name
           }
         ),+
@@ -106,6 +109,7 @@ rpc_calls!{
   #[doc="Fetches a list of commands"]
   #[usage=""]
   #[coinjoin=false]
+  #[wallet=false]
   pub fn help(_: &RpcCall, idle_state: &mut IdleState, _: Vec<json::Json>) {
     let mut ret = TreeMap::new();
     for call in RPC_CALLS.values() {
@@ -122,6 +126,7 @@ rpc_calls!{
   #[doc="Gets a specific block from the blockchain"]
   #[usage="<hash>"]
   #[coinjoin=false]
+  #[wallet=false]
   pub fn getblock(rpc: &RpcCall, idle_state: &mut IdleState, params: Vec<json::Json>) {
     match params.len() {
       1 => {
@@ -148,6 +153,7 @@ rpc_calls!{
   #[doc="Gets the current number of unspent outputs on the blockchain."]
   #[usage=""]
   #[coinjoin=false]
+  #[wallet=false]
   pub fn getutxocount(rpc: &RpcCall, idle_state: &mut IdleState, params: Vec<json::Json>) {
     match params.len() {
       0 => Ok(json::U64(idle_state.utxo_set.read().n_utxos() as u64)),
@@ -158,6 +164,7 @@ rpc_calls!{
   #[doc="Gets the length of the longest chain, starting from the given hash or genesis."]
   #[usage="[start hash]"]
   #[coinjoin=false]
+  #[wallet=false]
   pub fn getblockcount(rpc: &RpcCall, idle_state: &mut IdleState, params: Vec<json::Json>) {
     match params.len() {
       0 => {
@@ -182,6 +189,7 @@ rpc_calls!{
   #[doc="Decodes a raw transaction"]
   #[usage="<hex-encoded tx data>"]
   #[coinjoin=false]
+  #[wallet=false]
   pub fn raw_decode(rpc: &RpcCall, _: &mut IdleState, params: Vec<json::Json>) {
     match params.len() {
       1 => {
@@ -195,6 +203,7 @@ rpc_calls!{
   #[doc="Validates a raw transaction"]
   #[usage="<hex-encoded tx data>"]
   #[coinjoin=false]
+  #[wallet=false]
   pub fn raw_validate(rpc: &RpcCall, idle_state: &mut IdleState, params: Vec<json::Json>) {
     match params.len() {
       1 => {
@@ -212,6 +221,7 @@ rpc_calls!{
   #[doc="Traces execution of a raw transaction's scripts"]
   #[usage="<hex-encoded tx data>"]
   #[coinjoin=false]
+  #[wallet=false]
   pub fn raw_trace(rpc: &RpcCall, idle_state: &mut IdleState, params: Vec<json::Json>) {
     match params.len() {
       1 => {
@@ -226,6 +236,7 @@ rpc_calls!{
   #[doc="Traces execution of an individual script"]
   #[usage="<hex-encoded script>"]
   #[coinjoin=false]
+  #[wallet=false]
   pub fn script_trace(rpc: &RpcCall, _: &mut IdleState, params: Vec<json::Json>) {
     match params.len() {
       1 => {
@@ -239,6 +250,7 @@ rpc_calls!{
   #[doc="Checks whether a script pubkey can be proven to have no satisfying input. Returns 'spendable' or 'unspendable'."]
   #[usage="<hex-encoded script>"]
   #[coinjoin=false]
+  #[wallet=false]
   pub fn script_unspendable(rpc: &RpcCall, _: &mut IdleState, params: Vec<json::Json>) {
     match params.len() {
       1 => {
@@ -252,6 +264,7 @@ rpc_calls!{
   #[doc="Starts a new coinjoin session"]
   #[usage="<target amount (satoshi)> <join duration (seconds)> <merge duration (seconds)>"]
   #[coinjoin=true]
+  #[wallet=false]
   pub fn coinjoin_start(rpc: &RpcCall, idle_state: &mut IdleState, params: Vec<json::Json>) { 
     match params.len() {
       3 => {
@@ -297,6 +310,7 @@ rpc_calls!{
   #[doc="Gets the status of the current coinjoin session"]
   #[usage="[session id]"]
   #[coinjoin=true]
+  #[wallet=false]
   pub fn coinjoin_status(rpc: &RpcCall, idle_state: &mut IdleState, params: Vec<json::Json>) {
     if idle_state.coinjoin.is_none() {
       return Err(bitcoin_json_error(SessionNotFound, None));
@@ -318,6 +332,7 @@ rpc_calls!{
   #[doc="Adds a unsigned transaction to the current coinjoin session"]
   #[usage="<rawtx> [session id]"]
   #[coinjoin=true]
+  #[wallet=false]
   pub fn coinjoin_add_raw_unsigned(rpc: &RpcCall, idle_state: &mut IdleState, params: Vec<json::Json>) {
     if idle_state.coinjoin.is_none() {
       return Err(bitcoin_json_error(SessionNotFound, None));
@@ -352,6 +367,7 @@ rpc_calls!{
   #[doc="Submits a (partially-)signed transaction to the current coinjoin session"]
   #[usage="<rawtx> [session id]"]
   #[coinjoin=true]
+  #[wallet=false]
   pub fn coinjoin_add_raw_signed(rpc: &RpcCall, idle_state: &mut IdleState, params: Vec<json::Json>) {
     if idle_state.coinjoin.is_none() {
       return Err(bitcoin_json_error(SessionNotFound, None));
