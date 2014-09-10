@@ -20,7 +20,7 @@ use std::collections::{DList, Deque};
 use std::default::Default;
 use std::io::{File, Open, Write, BufferedReader, BufferedWriter};
 use std::io::{FileNotFound, IoResult};
-use std::io::timer::Timer;
+use std::io::timer::{mod, Timer};
 use std::sync::{Arc, RWLock};
 use std::time::Duration;
 use serialize::json;
@@ -34,8 +34,8 @@ use bitcoin::network::constants::Network;
 use bitcoin::network::encodable::{ConsensusEncodable, ConsensusDecodable};
 use bitcoin::network::listener::Listener;
 use bitcoin::network::socket::Socket;
-use bitcoin::network::message::NetworkMessage;
-use bitcoin::network::message;
+use bitcoin::network::message::{mod, SocketResponse, NetworkMessage,
+                                MessageReceived, ConnectionFailed};
 use bitcoin::network::message_blockdata::{GetHeadersMessage, Inventory, InvBlock};
 use bitcoin::network::serialize::{BitcoinHash, RawEncoder, RawDecoder};
 use bitcoin::util::patricia_tree::PatriciaTree;
@@ -52,7 +52,7 @@ use wallet::{load_wallet, save_wallet, default_wallet};
 
 /// Data used by an idling wallet.
 pub struct IdleState {
-  net_chan: Receiver<NetworkMessage>,
+  net_chan: Receiver<SocketResponse>,
   /// Socket used to send network messages
   pub sock: Socket,
   /// Network that we're on
@@ -101,18 +101,39 @@ pub struct Bitcoind {
 }
 
 macro_rules! with_next_message(
-  ( $recv:expr, $( $name:pat => $code:expr )* ) => (
+  ( $bitcoind:expr, $idle_state:expr, $( $name:pat => $code:expr )* ) => (
     {
       let mut ret;
       loop {
-        match $recv {
-          $(
-            $name => {
-              ret = $code;
-              break;
-            },
-          )*
-          _ => {}
+        match $idle_state.net_chan.recv() {
+          MessageReceived(msg) => {
+            match msg {
+              $(
+                $name => {
+                  ret = $code;
+                  break;
+                },
+              )*
+              _ => {}
+            }
+          },
+          ConnectionFailed(e, tx) => {
+            debug!($idle_state, Error, "Network error: `{}`, reconnecting.", e);
+            tx.send(());
+            loop {
+              timer::sleep(Duration::seconds(3));
+              match $bitcoind.start() {
+                Ok((chan, sock)) => {
+                  $idle_state.net_chan = chan;
+                  $idle_state.sock = sock;
+                  break;
+                }
+                Err(e) => {
+                  debug!($idle_state, Error, "Error reconnecting: `{}`, trying again..", e);
+                }
+              }
+            }
+          }
         };
       }
       ret
@@ -138,7 +159,7 @@ macro_rules! debug(
                $($arg),*);
     }
   );
-  ($bitcoind:ident, $level:ident, $fmt:expr $(, $arg:expr)*) => (
+  ($bitcoind:expr, $level:ident, $fmt:expr $(, $arg:expr)*) => (
     if $level >= $bitcoind.config.debug_level {
       println!(concat!("{} [{:6}] {}: ", $fmt),
                time::now().rfc3339(),
@@ -259,7 +280,7 @@ impl Bitcoind {
             // Loop through received headers
             let mut received_headers = false;
             while !received_headers {
-              with_next_message!(idle_state.net_chan.recv(),
+              with_next_message!(self, idle_state,
                 message::Headers(headers) => {
                   for lone_header in headers.iter() {
                     match blockchain.add_header(lone_header.header) {
@@ -322,7 +343,7 @@ impl Bitcoind {
                 let mut block_count = 0;
                 let mut recv_data = PatriciaTree::new();
                 while block_count < cache.len() {
-                  with_next_message!(idle_state.net_chan.recv(),
+                  with_next_message!(self, idle_state,
                     message::Block(block) => {
                       recv_data.insert(&block.bitcoin_hash().into_le().low_128(), 128, block);
                       block_count += 1;
@@ -401,7 +422,7 @@ impl Bitcoind {
               // Receive new block data
               let mut block_count = 0;
               while block_count < inv_to_add_data.len() {
-                with_next_message!(idle_state.net_chan.recv(),
+                with_next_message!(self, idle_state,
                   message::Block(block) => {
                     debug!(idle_state, Notice, "Adding blockdata for {:x}", block.bitcoin_hash());
                     match blockchain.add_txdata(block) {
@@ -429,9 +450,18 @@ impl Bitcoind {
         // Idle loop
         None => {
           debug!(idle_state, Debug, "Idling...");
+          let mut replace_socket = false;
           nu_select!(
-            message from idle_state.net_chan => {
-              idle_message(&mut state_queue, &mut idle_state, message);
+            response from idle_state.net_chan => {
+              match response {
+                MessageReceived(message) => idle_message(&mut state_queue, &mut idle_state, message),
+                ConnectionFailed(e, tx) => {
+                  debug!(idle_state, Error, "Network error: `{}`, reconnecting.", e);
+                  tx.send(());
+                  timer::sleep(Duration::seconds(1));
+                  replace_socket = true;
+                }
+              }
             },
             () from save_timer => {
               state_queue.push(SyncBlockchain);
@@ -442,6 +472,21 @@ impl Bitcoind {
               tx.send(handle_rpc(request, &mut idle_state));
             }
           );
+          if replace_socket {
+            loop {
+              timer::sleep(Duration::seconds(3));
+              match self.start() {
+                Ok((chan, sock)) => {
+                  idle_state.net_chan = chan;
+                  idle_state.sock = sock;
+                  break;
+                }
+                Err(e) => {
+                  debug!(idle_state, Error, "Error reconnecting: `{}`, trying again..", e);
+                }
+              }
+            }
+          }
         },
         // Temporary states
         Some(SaveToDisk) => {
