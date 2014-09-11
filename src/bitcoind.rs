@@ -290,7 +290,7 @@ impl Bitcoind {
         Some(SyncUtxoSet(validation_level)) => {
           let mut failed = false;
           let mut cache = Vec::with_capacity(UTXO_SYNC_N_BLOCKS);
-          // Ugh these scopes are ugly. Can't wait for non-lexically-scoped borrows!
+          // Scope here to make sure we drop the read handle before we try to write
           {
             let blockchain = idle_state.blockchain.read();
             let last_hash = {
@@ -309,69 +309,76 @@ impl Bitcoind {
               utxo_set.last_hash()
             };
             // Loop through blockchain for new data
-            let mut iter = blockchain.iter(last_hash).enumerate().skip(1).peekable();
-            for (count, node) in iter {
-              // Reborrow blockchain and utxoset on each iter
-              cache.push(Inventory { inv_type: InvBlock, hash: node.block.bitcoin_hash() });
+            let mut iter = blockchain.iter(last_hash).skip(1).peekable();
+            while !failed && !iter.is_empty() {
+              // Cache a bunch of blocks to minimize network messages (bitcoind puts delays into each one)
+              let mut height = 0;
+              for node in iter.by_ref().take(UTXO_SYNC_N_BLOCKS) {
+                cache.push(Inventory { inv_type: InvBlock, hash: node.block.bitcoin_hash() });
+                height = node.height;
+              }
 
-              // Every so often, send a new message
-              if count % UTXO_SYNC_N_BLOCKS == 0 || iter.is_empty() {
-                let mut utxo_set = idle_state.utxo_set.write();
-                debug!(idle_state, Notice, "UTXO sync: n_blocks {} n_utxos {} pruned {}",
-                       count, utxo_set.n_utxos(), utxo_set.n_pruned());
-                consume_err("UTXO sync: failed to send `getdata` message",
-                  idle_state.sock.send_message(message::GetData(cache.clone())));
+              // Once we've cached enough, send a message requesting them
+              let mut utxo_set = idle_state.utxo_set.write();
+              debug!(idle_state, Notice, "UTXO sync: height {} n_utxos {} pruned {}",
+                     height, utxo_set.n_utxos(), utxo_set.n_pruned());
+              consume_err("UTXO sync: failed to send `getdata` message",
+                idle_state.sock.send_message(message::GetData(cache.clone())));
 
-                let mut block_count = 0;
-                let mut recv_data = PatriciaTree::new();
-                while block_count < cache.len() {
-                  with_next_message!(self, idle_state,
-                    message::Block(block) => {
-                      recv_data.insert(&block.bitcoin_hash().into_le().low_128(), 128, block);
-                      block_count += 1;
-                    }
-                    message::NotFound(_) => {
-                      debug!(idle_state, Error,
-                             "UTXO sync: received `notfound` from sync peer, failing sync.");
-                      failed = true;
-                      block_count += 1;
-                    }
-                    message::Ping(nonce) => {
-                      consume_err("Warning: failed to send pong in response to ping",
-                        idle_state.sock.send_message(message::Pong(nonce)));
-                    }
-                  )
-                }
-                for (n, recv_inv) in cache.iter().enumerate() {
-                  let block_opt = recv_data.lookup(&recv_inv.hash.into_le().low_128(), 128);
-                  match block_opt {
-                    Some(block) => {
-                      let height = count - UTXO_SYNC_N_BLOCKS + 1 + n;
-                      debug!(idle_state, Debug, "Updating UTXO set with block {}: {:x}",
-                             height, block.bitcoin_hash());
-                      match utxo_set.update(block, height, validation_level) {
-                        Ok(_) => {}
-                        Err(e) => {
-                          debug!(idle_state, Error,
-                                 "Failed to update UTXO set with block {:x}: {}",
-                                 block.bitcoin_hash(), e);
-                          failed = true;
-                        }
+              let mut block_count = 0;
+              let mut recv_data = PatriciaTree::new();
+              while block_count < cache.len() {
+                with_next_message!(self, idle_state,
+                  message::Block(block) => {
+                    recv_data.insert(&block.bitcoin_hash().into_le().low_128(), 128, block);
+                    block_count += 1;
+                  }
+                  message::NotFound(_) => {
+                    debug!(idle_state, Error,
+                           "UTXO sync: received `notfound` from sync peer, failing sync.");
+                    failed = true;
+                    block_count += 1;
+                  }
+                  message::Ping(nonce) => {
+                    consume_err("Warning: failed to send pong in response to ping",
+                      idle_state.sock.send_message(message::Pong(nonce)));
+                  }
+                )
+              }
+              for (n, recv_inv) in cache.iter().enumerate() {
+                let block_opt = recv_data.lookup(&recv_inv.hash.into_le().low_128(), 128);
+                match block_opt {
+                  Some(block) => {
+                    let height = height as uint - UTXO_SYNC_N_BLOCKS + 1 + n;
+                    debug!(idle_state, Debug, "Updating UTXO set with block {}: {:x}",
+                           height, block.bitcoin_hash());
+                    match utxo_set.update(block, height, validation_level) {
+                      Ok(_) => {}
+                      Err(e) => {
+                        debug!(idle_state, Error,
+                               "Failed to update UTXO set with block {:x}: {}",
+                               block.bitcoin_hash(), e);
+                        failed = true;
+                        // If this block fails, the next one definitely will (since the prevhash
+                        // won't match) so just drop out ofthe loop now.
+                        break;
                       }
                     }
-                    None => {
-                      debug!(idle_state, Error, "Uh oh, requested block {:x} but didn't get it!",
-                             recv_inv.hash);
-                      failed = true;
-                    }
+                  }
+                  None => {
+                    debug!(idle_state, Error, "Uh oh, requested block {:x} but didn't get it!",
+                           recv_inv.hash);
+                    failed = true;
                   }
                 }
-                cache.clear();
               }
+              cache.clear();
             }
           }
           if failed {
             debug!(idle_state, Error, "Failed to sync UTXO set, will resync chain and try again.");
+            debug!(idle_state, Debug, "Pausing for 3 seconds.");
+            timer::sleep(Duration::seconds(3));
             state_queue.push(SyncBlockchain);
             state_queue.push(SyncUtxoSet(validation_level));
           } else {
