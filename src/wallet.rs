@@ -17,7 +17,7 @@
 //! Functions for storing and reading data from disk are here
 //!
 
-use std::io::{InvalidInput, IoError, IoResult};
+use std::io::{FileNotFound, InvalidInput, IoError, OtherIoError, IoResult};
 use std::io::{BufferedReader, BufferedWriter, File, Open, Write};
 use std::str;
 use std::rand::{mod, Rng};
@@ -74,6 +74,32 @@ pub fn default_wallet(network: Network) -> Result<Wallet, bip32::Error> {
   let mut seed = [0, ..256];
   rng.fill_bytes(seed.as_mut_slice());
   Wallet::from_seed(network, seed.as_slice())
+}
+
+/// Loads the wallet from disk; failing that, creates a default one
+pub fn load_or_create_wallet(config: &NetworkConfig) -> IoResult<Wallet> {
+  let wallet = load_wallet(config);
+  match wallet {
+    Err(err) => {
+      if err.kind == FileNotFound {
+        let new = default_wallet(config.network);
+        match new {
+          Err(e) => Err(IoError { kind: OtherIoError,
+                                  desc: "BIP32 error",
+                                  detail: Some(e.to_string()) }),
+          Ok(w) => {
+            match save_wallet(config, &w) {
+              Err(e) => Err(e),
+              Ok(_) => Ok(w)
+            }
+          }
+        }
+      } else {
+        Err(err)
+      }
+    },
+    Ok(w) => Ok(w)
+  }
 }
 
 

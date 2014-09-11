@@ -229,7 +229,7 @@ impl Session {
     for input in tx.input.iter() {
       let utxo = utxo_set.get_utxo(input.prev_hash, input.prev_index);
       match utxo {
-        Some(out) => { total_in += out.value; }
+        Some((_, out)) => { total_in += out.value; }
         None => { return Err(UnknownInput(input.prev_hash, input.prev_index as uint)); }
       }
       for other_tx in self.unsigned.iter() { 

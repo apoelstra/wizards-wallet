@@ -19,7 +19,7 @@
 use std::collections::{DList, Deque};
 use std::default::Default;
 use std::io::{File, Open, Write, BufferedReader, BufferedWriter};
-use std::io::{FileNotFound, IoResult};
+use std::io::IoResult;
 use std::io::timer::{mod, Timer};
 use std::sync::{Arc, RWLock};
 use std::time::Duration;
@@ -48,7 +48,7 @@ use constants::UTXO_SYNC_N_BLOCKS;
 use constants::SAVE_FREQUENCY;
 use rpc_server::handle_rpc;
 use user_data::NetworkConfig;
-use wallet::{load_wallet, save_wallet, default_wallet};
+use wallet::load_or_create_wallet;
 
 /// Data used by an idling wallet.
 pub struct IdleState {
@@ -189,27 +189,9 @@ impl Bitcoind {
     // Startup
     // Read wallet
     debug!(self, Status, "Reading wallet...");
-    let wallet = load_wallet(&self.config);
-    let mut wallet = match wallet {
-      Err(err) => {
-        if err.kind == FileNotFound {
-          debug!(self, Status, "Wallet not found. Creating new one.");
-          let new = default_wallet(self.config.network);
-          match new {
-            Err(e) => fatal!(self.config.network, "Unable to create wallet: {}", e),
-            Ok(w) => {
-              match save_wallet(&self.config, &w) {
-                Err(e) => debug!(self, Error, "Failed to save wallet: {}", e),
-                Ok(_) => {}
-              }
-              w
-            }
-          }
-        } else {
-          fatal!(self.config.network, "Unable to read wallet: {}", err);
-        }
-      },
-      Ok(w) => w
+    let mut wallet = match load_or_create_wallet(&self.config) {
+      Ok(w) => w,
+      Err(e) => fatal!(self.config.network, "Unable to read wallet: {}", e)
     };
     debug!(self, Status, "Loaded wallet.");
 
@@ -360,11 +342,14 @@ impl Bitcoind {
                     }
                   )
                 }
-                for recv_inv in cache.iter() {
+                for (n, recv_inv) in cache.iter().enumerate() {
                   let block_opt = recv_data.lookup(&recv_inv.hash.into_le().low_128(), 128);
                   match block_opt {
                     Some(block) => {
-                      match utxo_set.update(block, validation_level) {
+                      let height = count - UTXO_SYNC_N_BLOCKS + 1 + n;
+                      debug!(idle_state, Debug, "Updating UTXO set with block {}: {:x}",
+                             height, block.bitcoin_hash());
+                      match utxo_set.update(block, height, validation_level) {
                         Ok(_) => {}
                         Err(e) => {
                           debug!(idle_state, Error,
