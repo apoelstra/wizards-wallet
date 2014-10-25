@@ -5,7 +5,7 @@ This project is very incomplete. It is intended to be a usable-but-dangerous
 Bitcoin wallet with a focus on supporting experimental user-facing features,
 to explore UI designs but mostly just for fun.
 
-It is also the primary use case for the [bitcoin-rs](https://github.com/apoelstra/bitcoin-rs)
+It is also the primary use case for the [rust-bitcoin](https://github.com/apoelstra/rust-bitcoin)
 library.
 
 ### Building
